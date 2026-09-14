@@ -209,7 +209,7 @@ def _build_search_kb(drone: str = "all", voltage: str = "all", cap_class: str = 
     for v in VOLTAGES + ["all"]:
         buttons.append([InlineKeyboardButton(
             text=_mark(voltage == v, FILTER_LABELS["voltage"][v]),
-            callback_data=f"srch:v={v}",
+            callback_data=f"srch:v={v}:d={drone}:c={cap_class}",  # MODIFIED: состояние в callback_data
         )])
 
     # Секция: Ёмкость
@@ -217,7 +217,7 @@ def _build_search_kb(drone: str = "all", voltage: str = "all", cap_class: str = 
     for c in CAP_CLASSES + ["all"]:
         buttons.append([InlineKeyboardButton(
             text=_mark(cap_class == c, FILTER_LABELS["cap_class"][c]),
-            callback_data=f"srch:c={c}",
+            callback_data=f"srch:c={c}:d={drone}:v={voltage}",  # MODIFIED: состояние в callback_data
         )])
 
     # Секция: Платформа (в FILTER_LABELS["drone"] нет "all", поэтому «Все» задаётся литералом)
@@ -225,30 +225,32 @@ def _build_search_kb(drone: str = "all", voltage: str = "all", cap_class: str = 
     for d in PLATFORMS:
         buttons.append([InlineKeyboardButton(
             text=_mark(drone == d, FILTER_LABELS["drone"][d]),
-            callback_data=f"srch:d={d}",
+            callback_data=f"srch:d={d}:v={voltage}:c={cap_class}",  # MODIFIED: состояние в callback_data
         )])
     buttons.append([InlineKeyboardButton(
         text=_mark(drone == "all", "Все"),
-        callback_data="srch:d=all",
+        callback_data=f"srch:d=all:v={voltage}:c={cap_class}",  # MODIFIED: состояние в callback_data
     )])
 
     # Нижние кнопки: показ результатов или индикатор пустого выбора
     if _apply_filters(drone=drone, voltage=voltage, cap_class=cap_class):
-        buttons.append([InlineKeyboardButton(text="🔍 Показать результаты", callback_data="srch:show")])
+        buttons.append([InlineKeyboardButton(text="🔍 Показать результаты", callback_data=f"srch:show:d={drone}:v={voltage}:c={cap_class}")])  # MODIFIED: состояние в callback_data
     else:
         buttons.append([InlineKeyboardButton(text="Нет совпадений", callback_data="dummy")])
     buttons.append([InlineKeyboardButton(text="♻️ Сбросить фильтры", callback_data="srch:reset")])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+# MODIFIED: добавлена кнопка "🔎 Поиск" (мульти-фильтр)
 MAIN_BUTTONS = {
-    "📊 ТТХ", "🧠 Подбор", "🤖 AI-ассистент", "🛑 Стоп-лист", 
+    "📊 ТТХ", "🧠 Подбор", "🔎 Поиск", "🤖 AI-ассистент", "🛑 Стоп-лист",
     "📦 Памятка", "🔧 Своя сборка", "📝 Обратная связь"
 }
 
+# MODIFIED: кнопка "🔎 Поиск" в первой строке рядом с "📊 ТТХ"
 main_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="📊 ТТХ"), KeyboardButton(text="🤖 AI-ассистент")],
+        [KeyboardButton(text="📊 ТТХ"), KeyboardButton(text="🔎 Поиск"), KeyboardButton(text="🤖 AI-ассистент")],
         [KeyboardButton(text="🧠 Подбор"), KeyboardButton(text="🔧 Своя сборка")],
         [KeyboardButton(text="🛑 Стоп-лист"), KeyboardButton(text="📦 Памятка")],
         [KeyboardButton(text="📝 Обратная связь")],
@@ -862,6 +864,137 @@ async def callback_filter_model(callback: types.CallbackQuery):
         await callback.message.edit_text(text, reply_markup=back_kb, parse_mode="HTML")
     except Exception:
         await callback.message.edit_text(text, reply_markup=back_kb)
+
+    await callback.answer()
+
+# NEW: карточка модели из результатов мульти-фильтра «🔎 Поиск» — с возвратом к результатам поиска.
+# (существующие callback_model / callback_row из потока 📊 ТТХ не затронуты)
+@dp.callback_query(F.data.startswith("srchm:"))
+async def callback_search_model(callback: types.CallbackQuery):
+    # Формат callback_data (см. callback_search, action == "show"):
+    #   srchm:{code}:d={d}:v={v}:c={c}
+    parts = callback.data[len("srchm:"):].split(":")
+    model_code = parts[0]
+    drone, voltage, cap_class = "all", "all", "all"
+    for part in parts[1:]:
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        if key == "d":
+            drone = value
+        elif key == "v":
+            voltage = value
+        elif key == "c":
+            cap_class = value
+
+    row = get_row(model_code)
+    back_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(
+                text="⬅️ К результатам поиска",
+                callback_data=f"srch:back:d={drone}:v={voltage}:c={cap_class}",
+            )],
+            [InlineKeyboardButton(
+                text=f"⬅️ Ко всем моделям {row}",
+                callback_data=f"row:{row}",
+            )],
+        ]
+    )
+    text = format_model(model_code)
+
+    try:
+        await callback.message.edit_text(text, reply_markup=back_kb, parse_mode="HTML")
+    except Exception:
+        await callback.message.edit_text(text, reply_markup=back_kb)
+
+    await callback.answer()
+
+# === МУЛЬТИ-ФИЛЬТР «🔎 Поиск» ===
+# NEW: точка входа в мульти-фильтр
+@dp.message(F.text == "🔎 Поиск")
+async def button_search(message: types.Message):
+    await message.answer(
+        "🔎 Поиск АКБ\n\nНастройте фильтры:",
+        reply_markup=_build_search_kb(),
+    )
+
+# NEW: действия мульти-фильтра. Префикс "srch:" не пересекается с каскадом "flt:",
+# состояние фильтров передаётся в callback_data каждой кнопки (stateless).
+@dp.callback_query(F.data.startswith("srch:"))
+async def callback_search(callback: types.CallbackQuery):
+    # Форматы callback_data (см. _build_search_kb):
+    #   srch:v={v}:d={d}:c={c}       — выбор напряжения
+    #   srch:c={c}:d={d}:v={v}       — выбор класса ёмкости
+    #   srch:d={d}:v={v}:c={c}       — выбор платформы
+    #   srch:show:d={d}:v={v}:c={c}  — показать результаты
+    #   srch:reset                   — сброс всех фильтров в "all"
+    #   srch:back:d={d}:v={v}:c={c}  — возврат к экрану фильтров
+    drone, voltage, cap_class = "all", "all", "all"
+    action = None
+    for part in callback.data[len("srch:"):].split(":"):
+        if "=" in part:
+            key, value = part.split("=", 1)
+            if key == "d":
+                drone = value
+            elif key == "v":
+                voltage = value
+            elif key == "c":
+                cap_class = value
+        else:
+            action = part
+
+    if action == "reset":
+        drone = voltage = cap_class = "all"
+
+    filters = {"drone": drone, "voltage": voltage, "cap_class": cap_class}
+
+    # ЛОГИРОВАНИЕ: действие мульти-фильтра
+    dialog_logger.info(json.dumps({
+        'event': 'search_action',
+        'user_id': callback.from_user.id,
+        'username': callback.from_user.username or 'unknown',
+        'action': action or 'filter',
+        'filters': filters,
+        'timestamp': datetime.now().isoformat()
+    }, ensure_ascii=False))
+
+    def _disp(dict_key: str, value: str) -> str:
+        # "all" — псевдозначение, которого нет в FILTER_LABELS["drone"]
+        if value == "all":
+            return "Любая" if dict_key == "drone" else "Все"
+        return FILTER_LABELS[dict_key].get(value, value)
+
+    if action == "show":
+        matches = _apply_filters(drone=drone, voltage=voltage, cap_class=cap_class)
+        text = (
+            f"🔎 Поиск АКБ — результаты\n\n"
+            f"Платформа: {_disp('drone', drone)}\n"
+            f"Напряжение: {_disp('voltage', voltage)}\n"
+            f"Ёмкость: {_disp('cap_class', cap_class)}\n\n"
+            f"Найдено моделей: {len(matches)}\n\n"
+            "Выберите модель:"
+        )
+        buttons = [
+            [InlineKeyboardButton(
+                text=f"{code} | {m['mah']}мАч | {m['kg']}кг",
+                callback_data=f"srchm:{code}:d={drone}:v={voltage}:c={cap_class}",  # MODIFIED: возврат к результатам поиска вместо потока ТТХ
+            )]
+            for code, m in matches.items()
+        ]
+        buttons.append([InlineKeyboardButton(
+            text="⬅️ К фильтрам",
+            callback_data=f"srch:back:d={drone}:v={voltage}:c={cap_class}",
+        )])
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    else:
+        # filter / reset / back — экран фильтров с актуальным состоянием
+        text = "🔎 Поиск АКБ\n\nНастройте фильтры:"
+        kb = _build_search_kb(drone=drone, voltage=voltage, cap_class=cap_class)
+
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except Exception as e:
+        system_logger.warning(f"Search edit failed: {e}")
 
     await callback.answer()
 
