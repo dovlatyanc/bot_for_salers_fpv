@@ -1,0 +1,1 @@
+Ignore the .venv directory. Never read, search, or modify files in .venv or __pycache__.
