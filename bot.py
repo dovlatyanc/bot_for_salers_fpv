@@ -14,11 +14,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
+    FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
     ReplyKeyboardMarkup,
-)
+)  # MODIFIED: добавлен FSInputFile для отправки фото карточек
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -101,6 +102,12 @@ class FeedbackState(StatesGroup):
 class BuildState(StatesGroup):
     waiting_for_config = State()
 
+# NEW: состояния экспресс-диагностики «🧠 Подбор» (Приложение 4 стандарта продаж)
+class SelectionState(StatesGroup):
+    step_a = State()  # Вопрос А: 6S / 8S / не знаю
+    step_b = State()  # Вопрос Б: рывок (LiPo — отказ) или километры
+    step_c = State()  # Вопрос В: нагрузка на борту (варианты зависят от напряжения)
+
 
 # ============================================================
 # ============================================================
@@ -155,49 +162,14 @@ def _apply_filters(drone: str | None = None, voltage: str | None = None, cap_cla
     return result
 
 
-def _build_filter_kb(level: str, drone: str = "all", voltage: str = "all", cap_class: str = "all") -> InlineKeyboardMarkup:
-    buttons: list[list[InlineKeyboardButton]] = []
-
-    if level == "drone":
-        for p in PLATFORMS:
-            if _apply_filters(drone=p):
-                buttons.append([InlineKeyboardButton(
-                    text=FILTER_LABELS["drone"][p],
-                    callback_data=f"flt:d={p}",
-                )])
-        # NEW: выход из подбора с первого экрана
-        buttons.append([InlineKeyboardButton(text="⬅️ Отмена", callback_data="flt:cancel")])
-
-    elif level == "voltage":
-        for v in VOLTAGES + ["all"]:
-            if _apply_filters(drone=drone, voltage=v):
-                buttons.append([InlineKeyboardButton(
-                    text=FILTER_LABELS["voltage"][v],
-                    callback_data=f"flt:v={v}:d={drone}",
-                )])
-        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="flt:back:drone:d=all")])
-
-    elif level == "cap_class":
-        for c in CAP_CLASSES + ["all"]:
-            if _apply_filters(drone=drone, voltage=voltage, cap_class=c):
-                buttons.append([InlineKeyboardButton(
-                    text=FILTER_LABELS["cap_class"][c],
-                    callback_data=f"flt:c={c}:v={voltage}:d={drone}",
-                )])
-        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"flt:back:voltage:v=all:d={drone}")])
-
-    elif level == "results":
-        for code, m in _apply_filters(drone=drone, voltage=voltage, cap_class=cap_class).items():
-            buttons.append([InlineKeyboardButton(
-                text=f"{code} | {m['mah']}мАч | {m['kg']}кг",
-                callback_data=f"fltm:{code}:d={drone}:v={voltage}:c={cap_class}",  # MODIFIED: карточка с возвратом к результатам
-            )])
-        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"flt:back:cap_class:c=all:v={voltage}:d={drone}")])
-
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+# DELETED: _build_filter_kb — каскадный фильтр «flt:» удалён.
+# «🧠 Подбор» теперь FSM-диагностика (см. блок ЭКСПРЕСС-ДИАГНОСТИКА ниже);
+# _apply_filters сохранён — используется мульти-фильтром «🔎 Поиск».
 
 
 # NEW: мульти-фильтр — все секции на одном экране, активные значения помечены «✅ »
+# MODIFIED: label-кнопки секций («⚡ Напряжение», «🔋 Ёмкость», «🚁 Платформа») убраны —
+# заголовки секций отображаются в тексте сообщения (см. button_search / callback_search).
 def _build_search_kb(drone: str = "all", voltage: str = "all", cap_class: str = "all") -> InlineKeyboardMarkup:
     buttons: list[list[InlineKeyboardButton]] = []
 
@@ -205,7 +177,7 @@ def _build_search_kb(drone: str = "all", voltage: str = "all", cap_class: str = 
         return f"✅ {label}" if active else label
 
     # Секция: Напряжение
-    buttons.append([InlineKeyboardButton(text="⚡ Напряжение", callback_data="dummy")])
+    # MODIFIED: label-кнопка «⚡ Напряжение» (callback_data="dummy") убрана — заголовок в тексте сообщения
     for v in VOLTAGES + ["all"]:
         buttons.append([InlineKeyboardButton(
             text=_mark(voltage == v, FILTER_LABELS["voltage"][v]),
@@ -213,7 +185,7 @@ def _build_search_kb(drone: str = "all", voltage: str = "all", cap_class: str = 
         )])
 
     # Секция: Ёмкость
-    buttons.append([InlineKeyboardButton(text="🔋 Ёмкость", callback_data="dummy")])
+    # MODIFIED: label-кнопка «🔋 Ёмкость» (callback_data="dummy") убрана — заголовок в тексте сообщения
     for c in CAP_CLASSES + ["all"]:
         buttons.append([InlineKeyboardButton(
             text=_mark(cap_class == c, FILTER_LABELS["cap_class"][c]),
@@ -221,7 +193,7 @@ def _build_search_kb(drone: str = "all", voltage: str = "all", cap_class: str = 
         )])
 
     # Секция: Платформа (в FILTER_LABELS["drone"] нет "all", поэтому «Все» задаётся литералом)
-    buttons.append([InlineKeyboardButton(text="🚁 Платформа", callback_data="dummy")])
+    # MODIFIED: label-кнопка «🚁 Платформа» (callback_data="dummy") убрана — заголовок в тексте сообщения
     for d in PLATFORMS:
         buttons.append([InlineKeyboardButton(
             text=_mark(drone == d, FILTER_LABELS["drone"][d]),
@@ -358,7 +330,7 @@ async def handle_ai_request(message: types.Message, question: str):
 
     await answer_ai_with_feedback(message, answer)
 
-def format_model(model_code: str) -> str:
+def format_model(model_code: str) -> tuple[str, str | None]:  # MODIFIED: возвращает кортеж (текст, путь к фото или None)
     m = MODELS[model_code]
     row = get_row(model_code)
 
@@ -399,7 +371,46 @@ def format_model(model_code: str) -> str:
     if m.get("warn"):
         text += f"\n\n<i>Внимание: {m['warn']}</i>"
 
-    return text
+    return text, m.get("photo")  # MODIFIED: возвращаем кортеж (текст, путь к фото или None)
+
+
+# NEW: универсальная отправка карточки модели — фото с подписью, если фото есть, иначе текст.
+# target — types.Message (отправка через answer) или types.CallbackQuery (edit_text).
+async def send_model_card(target, model_code: str, kb: InlineKeyboardMarkup) -> None:
+    text, photo_path = format_model(model_code)
+
+    if isinstance(target, types.CallbackQuery):
+        msg = target.message
+    else:
+        msg = target
+
+    # Пути в MODELS относительные — разрешаем их от каталога bot.py (независимо от CWD)
+    if photo_path:
+        abs_path = photo_path if os.path.isabs(photo_path) else os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), photo_path
+        )
+        # Лимит подписи к фото в Telegram — 1024 символа
+        if os.path.exists(abs_path) and len(text) <= 1024:
+            try:
+                await bot.send_photo(
+                    msg.chat.id,
+                    FSInputFile(abs_path),
+                    caption=text,
+                    parse_mode="HTML",
+                    reply_markup=kb,
+                )
+                return
+            except Exception as e:
+                system_logger.warning(f"Model photo send failed: {e}")
+
+    # Нет фото (файл отсутствует, подпись длиннее 1024 или ошибка отправки) — текст как раньше
+    if isinstance(target, types.CallbackQuery):
+        try:
+            await msg.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            await msg.edit_text(text, reply_markup=kb)
+    else:
+        await msg.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 # ============================================================
@@ -414,7 +425,7 @@ async def cmd_start(message: types.Message):
 
 <b>Кнопки:</b>
 📊 ТТХ — характеристики моделей
-🧠 Подбор — быстрый чек-лист подбора
+🧠 Подбор — экспресс-подбор по задаче за 3 вопроса
 🤖 AI-ассистент — вопрос по клиенту или возражению
 🔧 Своя сборка — расчёт нестандартной конфигурации
 🛑 Стоп-лист — что нельзя говорить и продавать
@@ -449,13 +460,16 @@ async def button_ttx(message: types.Message):
     )
     await message.answer("Выберите ряд:", reply_markup=kb)
 
-# === КАСКАДНЫЙ ФИЛЬТР ===
-@dp.message(F.text == "🧠 Подбор")  # MODIFIED: был статический чек-лист, теперь точка входа в каскадный фильтр
-async def button_selection(message: types.Message):
-    # Точка входа в каскадный фильтр: первый уровень — выбор платформы
+# === ЭКСПРЕСС-ДИАГНОСТИКА «🧠 ПОДБОР» ===
+# MODIFIED: каскадный фильтр по платформе заменён FSM-диагностикой (Приложение 4 стандарта продаж)
+@dp.message(F.text == "🧠 Подбор")
+async def button_selection(message: types.Message, state: FSMContext):
+    # NEW: шаг 1 из 3 — напряжение платформы; ход диалога хранится в FSM (SelectionState)
+    await state.clear()
+    await state.set_state(SelectionState.step_a)
     await message.answer(
-        "🔍 Подбор АКБ\n\nВыберите платформу дрона:",
-        reply_markup=_build_filter_kb("drone"),
+        SEL_STEP_A_TEXT,
+        reply_markup=_sel_step_a_kb(),
     )
 
 # NEW: старый статический чек-лист сохранён по команде /checklist
@@ -707,164 +721,256 @@ async def callback_model(callback: types.CallbackQuery):
             [InlineKeyboardButton(text=f"⬅️ К списку {row}", callback_data=f"row:{row}")]
         ]
     )
-    text = format_model(model_code)
-    
-    try:
-        await callback.message.edit_text(text, reply_markup=back_kb, parse_mode="HTML")
-    except Exception:
-        await callback.message.edit_text(text, reply_markup=back_kb)
-        
+    # MODIFIED: карточка через send_model_card (фото + подпись, если фото есть)
+    await send_model_card(callback, model_code, back_kb)
+
     await callback.answer()
 
-# === КАСКАДНЫЙ ФИЛЬТР ===
+# === ЭКСПРЕСС-ДИАГНОСТИКА «🧠 ПОДБОР» ===
 # ============================================================
-# INLINE: КАСКАДНЫЙ ФИЛЬТР ПОДБОРА  # NEW
+# NEW: три шага диагностики из Приложения 4 стандарта продаж.
+# DELETED: каскадный фильтр «flt:» (callback_filter) и карточки «fltm:» (callback_filter_model).
+# Ход диалога хранится в FSM (SelectionState), а не в callback_data.
 # ============================================================
-@dp.callback_query(F.data.startswith("flt:"))
-async def callback_filter(callback: types.CallbackQuery):
-    # Форматы callback_data (см. _build_filter_kb):
-    #   flt:d={p}                      — выбрана платформа
-    #   flt:v={v}:d={d}                — выбрано напряжение
-    #   flt:c={c}:v={v}:d={d}          — выбран класс ёмкости
-    #   flt:back:{level}:{k}={v}:...   — возврат на уровень level
-    parts = callback.data[len("flt:"):].split(":")
-    drone, voltage, cap_class = "all", "all", "all"
-    level = "drone"
 
-    def _parse_pairs(chunk: list[str]) -> None:
-        nonlocal drone, voltage, cap_class
-        for part in chunk:
-            if "=" not in part:
-                continue
-            key, value = part.split("=", 1)
-            if key == "d":
-                drone = value
-            elif key == "v":
-                voltage = value
-            elif key == "c":
-                cap_class = value
+# NEW: Вопрос В (нагрузка на борту) — варианты кнопок и кандидаты по напряжению.
+# Коды кандидатов — точные ключи MODELS (карточка открывается существующим callback_model).
+SELECTION_STEP_C = {
+    "6S": {
+        "light": ("Ничего / до 0,7 кг", ["6S6P", "6S5P"]),
+        "cargo": ("Груз 1–1,5 кг", ["6S5P", "6S4P"]),
+        "ru20": ("Катушка 20 км", ["6S3P", "6S4P"]),
+    },
+    "8S": {
+        "thermal": ("Тепловизор, без катушки", ["8S6P", "8S5P"]),
+        "ru20g": ("Катушка 20 км + груз", ["8S6P", "8S4P"]),
+        "ru30": ("Катушка 30 км / макс. автономность", ["8S8P", "8S7P"]),
+        "spec10": ('Спец-10" лёгкая', ["8S4P", "8S3P"]),
+    },
+}
+# NEW: конфликтная конфигурация 6S — катушка 20 км + груз от 1 кг (переход на 13" 8S)
+SELECTION_6S_CONFLICT = "cl"
+SELECTION_6S_CONFLICT_LABEL = "Катушка 20 км + груз от 1 кг"
+# NEW: платформа для предустановки фильтров «🔎 Поиск»: кандидаты 6S — все 10", 8S — смешанные
+SELECTION_DRONE_BY_VOLTAGE = {"6S": "10", "8S": "all"}
 
-    if parts[0] == "back":
-        # Возврат: flt:back:{target_level}:d=...:v=...:c=...
-        if len(parts) > 1:
-            level = parts[1]
-        _parse_pairs(parts[2:])
-    elif parts[0] == "cancel":
-        # NEW: отмена подбора с первого экрана — убираем инлайн-клавиатуру
-        try:
-            await callback.message.edit_text("🧠 Подбор отменён.\nНажмите «🧠 Подбор», чтобы начать заново.")
-        except Exception as e:
-            system_logger.warning(f"Filter cancel failed: {e}")
-        await callback.answer()
-        return
-    elif parts[0].split("=", 1)[0] in {"d", "v", "c"}:
-        # Выбор: следующий уровень определяем по ТОМУ, ЧТО выбрал пользователь
-        # (d → напряжение, v → ёмкость, c → результаты), а не по итоговому
-        # состоянию — иначе кнопка «Все» не двигает каскад вперёд
-        key = parts[0].split("=", 1)[0]  # MODIFIED: фикс кнопки «Все»
-        _parse_pairs(parts)
-        if key == "d":
-            level = "voltage"
-        elif key == "v":
-            level = "cap_class"
-        else:  # key == "c"
-            level = "results"
-    else:
-        # Неизвестный формат callback_data — просто закрываем "часики"
-        await callback.answer()
-        return
+SEL_STEP_A_TEXT = (
+    "🧠 Экспресс-подбор АКБ — 3 вопроса\n\n"
+    "Вопрос 1/3: Дрон на 6S или на 8S?"
+)
 
-    # ЛОГИРОВАНИЕ: шаг каскадного фильтра
+
+def _sel_kb(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
+    # NEW: хелпер сборки инлайн-клавиатуры из пар (текст, callback_data)
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t, callback_data=d) for t, d in row]
+        for row in rows
+    ])
+
+
+def _sel_step_a_kb() -> InlineKeyboardMarkup:
+    # NEW: кнопки Вопроса А
+    return _sel_kb([
+        [("6S", "sel:a:6S"), ("8S", "sel:a:8S")],
+        [("Не знаю", "sel:a:unknown")],
+    ])
+
+
+def _sel_step_b_kb() -> InlineKeyboardMarkup:
+    # NEW: кнопки Вопроса Б
+    return _sel_kb([
+        [("🚀 Рывок (перехват, ПВО, гонки)", "sel:b:rush")],
+        [("🛣 Километры (разведка, катушка, доставка)", "sel:b:km")],
+    ])
+
+
+def _sel_log(callback: types.CallbackQuery, step: str, choice: str) -> None:
+    # NEW: логирование шага экспресс-подбора (dialog_logger)
     dialog_logger.info(json.dumps({
-        'event': 'filter_step',
+        'event': 'selection_step',
         'user_id': callback.from_user.id,
-        'level': level,
-        'drone': drone,
-        'voltage': voltage,
-        'cap_class': cap_class,
+        'step': step,
+        'choice': choice,
         'timestamp': datetime.now().isoformat()
     }, ensure_ascii=False))
 
-    def _disp(dict_key: str, value: str) -> str:
-        # "all" — псевдозначение, которого нет в FILTER_LABELS["drone"]
-        if value == "all":
-            return "Любая" if dict_key == "drone" else "Все"
-        return FILTER_LABELS[dict_key].get(value, value)
 
-    if level == "drone":
-        text = "🔍 Подбор АКБ\n\nВыберите платформу дрона:"
-    elif level == "voltage":
-        text = (
-            f"🔍 Подбор АКБ\n\n"
-            f"Платформа: {_disp('drone', drone)}\n\n"
-            "Выберите напряжение:"
-        )
-    elif level == "cap_class":
-        text = (
-            f"🔍 Подбор АКБ\n\n"
-            f"Платформа: {_disp('drone', drone)}\n"
-            f"Напряжение: {_disp('voltage', voltage)}\n\n"
-            "Выберите класс ёмкости:"
-        )
-    else:  # results
-        matches = _apply_filters(drone=drone, voltage=voltage, cap_class=cap_class)
-        text = (
-            f"🔍 Подбор АКБ — результаты\n\n"
-            f"Платформа: {_disp('drone', drone)}\n"
-            f"Напряжение: {_disp('voltage', voltage)}\n"
-            f"Ёмкость: {_disp('cap_class', cap_class)}\n\n"
-            f"Подходящих моделей: {len(matches)}\n\n"
-            "Выберите модель:"
-        )
-
-    kb = _build_filter_kb(level, drone=drone, voltage=voltage, cap_class=cap_class)
+async def _sel_show_step_b(callback: types.CallbackQuery, voltage: str) -> None:
+    # NEW: экран Вопроса Б с подтверждённым на шаге А напряжением
     try:
-        await callback.message.edit_text(text, reply_markup=kb)
+        await callback.message.edit_text(
+            "🧠 Экспресс-подбор АКБ\n\n"
+            f"Напряжение: {FILTER_LABELS['voltage'][voltage]}\n\n"
+            "Вопрос 2/3: Рывок или километры?",
+            reply_markup=_sel_step_b_kb(),
+        )
     except Exception as e:
-        system_logger.warning(f"Filter edit failed: {e}")
+        system_logger.warning(f"Selection step_b edit failed: {e}")
 
-    await callback.answer()
+def _sel_step_c_kb(voltage: str) -> InlineKeyboardMarkup:
+    # NEW: кнопки Вопроса В зависят от напряжения, выбранного на Вопросе А
+    rows = [[(label, f"sel:c:{key}")] for key, (label, _codes) in SELECTION_STEP_C[voltage].items()]
+    if voltage == "6S":
+        rows.append([(SELECTION_6S_CONFLICT_LABEL, f"sel:c:{SELECTION_6S_CONFLICT}")])
+    return _sel_kb(rows)
 
-# NEW: карточка модели из результатов каскадного фильтра — с возвратом к результатам.
-# (существующие callback_model / callback_row из потока 📊 ТТХ не затронуты)
-@dp.callback_query(F.data.startswith("fltm:"))
-async def callback_filter_model(callback: types.CallbackQuery):
-    # Формат callback_data (см. _build_filter_kb, уровень "results"):
-    #   fltm:{code}:d={d}:v={v}:c={c}
-    parts = callback.data[len("fltm:"):].split(":")
-    model_code = parts[0]
-    drone, voltage, cap_class = "all", "all", "all"
-    for part in parts[1:]:
-        if "=" not in part:
-            continue
-        key, value = part.split("=", 1)
-        if key == "d":
-            drone = value
-        elif key == "v":
-            voltage = value
-        elif key == "c":
-            cap_class = value
 
-    row = get_row(model_code)
-    back_kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(
-                text="⬅️ К результатам",
-                callback_data=f"flt:back:results:c={cap_class}:v={voltage}:d={drone}",
-            )],
-            [InlineKeyboardButton(
-                text=f"⬅️ Ко всем моделям {row}",
-                callback_data=f"row:{row}",
-            )],
-        ]
-    )
-    text = format_model(model_code)
-
+async def _sel_show_step_c(callback: types.CallbackQuery, voltage: str) -> None:
+    # NEW: экран Вопроса В
     try:
-        await callback.message.edit_text(text, reply_markup=back_kb, parse_mode="HTML")
-    except Exception:
-        await callback.message.edit_text(text, reply_markup=back_kb)
+        await callback.message.edit_text(
+            "🧠 Экспресс-подбор АКБ\n\n"
+            f"Напряжение: {FILTER_LABELS['voltage'][voltage]}\n\n"
+            "Вопрос 3/3: Что на борту кроме батареи?",
+            reply_markup=_sel_step_c_kb(voltage),
+        )
+    except Exception as e:
+        system_logger.warning(f"Selection step_c edit failed: {e}")
 
+
+async def _sel_show_results(callback: types.CallbackQuery, state: FSMContext, voltage: str, choice: str) -> None:
+    # NEW: экран результатов — кандидаты + мостик в «🔎 Поиск» с предустановленными фильтрами
+    label, codes = SELECTION_STEP_C[voltage][choice]
+    drone = SELECTION_DRONE_BY_VOLTAGE[voltage]
+    buttons = [
+        [InlineKeyboardButton(
+            text=f"{code} | {MODELS[code]['mah']}мАч | {MODELS[code]['kg']}кг",
+            callback_data=f"model:{code}",
+        )]
+        for code in codes
+    ]
+    buttons.append([InlineKeyboardButton(
+        text="🔎 Уточнить через Поиск",
+        callback_data=f"sel:search:v={voltage}:d={drone}",
+    )])
+    buttons.append([InlineKeyboardButton(text="⬅️ Начать заново", callback_data="sel:restart")])
+    text = (
+        "🧠 Экспресс-подбор — кандидаты\n\n"
+        f"Напряжение: {FILTER_LABELS['voltage'][voltage]}\n"
+        f"Задача: {label}\n\n"
+        f"Подходящих моделей: {len(codes)}\n\n"
+        "Это предварительный подбор. Для точного расчёта дальности и проверки тока "
+        "используйте 🔎 Поиск или напишите мне задачу."
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    except Exception as e:
+        system_logger.warning(f"Selection results edit failed: {e}")
+    # Диалог завершён — сбрасываем FSM (кнопки результатов и карточки не требуют состояния)
+    await state.clear()
+
+# NEW: обработчик кнопок экспресс-диагностики ("sel:").
+# FSM-гварды: каждое действие доступно только на своём шаге; «Начать заново» — с любого.
+@dp.callback_query(F.data.startswith("sel:"))
+async def callback_selection(callback: types.CallbackQuery, state: FSMContext):
+    payload = callback.data[len("sel:"):]
+    action, _, arg = payload.partition(":")
+    current = await state.get_state()
+
+    if action == "restart":
+        # «⬅️ Начать заново» с любого шага: полный сброс FSM и повторный показ шага 1
+        await state.clear()
+        await state.set_state(SelectionState.step_a)
+        _sel_log(callback, "restart", "restart")
+        try:
+            await callback.message.edit_text(SEL_STEP_A_TEXT, reply_markup=_sel_step_a_kb())
+        except Exception as e:
+            system_logger.warning(f"Selection restart failed: {e}")
+
+    elif action == "a" and current == SelectionState.step_a:
+        _sel_log(callback, "step_a", arg)
+        if arg == "unknown":
+            # «Не знаю» — без подтверждения напряжения подбор невозможен
+            await state.clear()
+            try:
+                await callback.message.edit_text(
+                    "❓ Напряжение не подтверждено.\n\n"
+                    "Пришлите фото регуляторов или напишите марку дрона. "
+                    "Без подтверждения напряжения подбор невозможен.",
+                    reply_markup=_sel_kb([[("⬅️ Начать заново", "sel:restart")]]),
+                )
+            except Exception as e:
+                system_logger.warning(f"Selection unknown edit failed: {e}")
+        elif arg in ("6S", "8S"):
+            await state.update_data(voltage=arg)
+            await state.set_state(SelectionState.step_b)
+            await _sel_show_step_b(callback, arg)
+
+    elif action == "b" and current == SelectionState.step_b:
+        _sel_log(callback, "step_b", arg)
+        if arg == "rush":
+            # Отказ по стандарту: под рывок нужен LiPo — это не наш продукт
+            await state.clear()
+            dialog_logger.info(json.dumps({
+                'event': 'selection_rejected',
+                'user_id': callback.from_user.id,
+                'reason': 'li_po_needed',
+                'timestamp': datetime.now().isoformat()
+            }, ensure_ascii=False))
+            try:
+                await callback.message.edit_text(
+                    "Под перехват, ПВО и гонки нужен LiPo — это не наш продукт.\n"
+                    "Наша батарея Li-Ion создана для дальности. "
+                    "Если задача изменится — пишите, подберём.",
+                    reply_markup=_sel_kb([[("⬅️ Начать заново", "sel:restart")]]),
+                )
+            except Exception as e:
+                system_logger.warning(f"Selection reject edit failed: {e}")
+        elif arg == "km":
+            data = await state.get_data()
+            voltage = data.get("voltage", "6S")
+            await state.set_state(SelectionState.step_c)
+            await _sel_show_step_c(callback, voltage)
+
+    elif action == "c" and current == SelectionState.step_c and arg == SELECTION_6S_CONFLICT:
+        # Конфликт 6S: катушка 20 км + груз от 1 кг — задача не решается, нужен 13" 8S
+        _sel_log(callback, "step_c", "6S:cl")
+        try:
+            await callback.message.edit_text(
+                'На 10" с катушкой 20 км и грузом задача не решается. Нужен переход на 13" 8S.',
+                reply_markup=_sel_kb([
+                    [("Перейти к подбору 8S", "sel:to8s")],
+                    [("⬅️ Начать заново", "sel:restart")],
+                ]),
+            )
+        except Exception as e:
+            system_logger.warning(f"Selection conflict edit failed: {e}")
+
+    elif action == "c" and current == SelectionState.step_c:
+        data = await state.get_data()
+        voltage = data.get("voltage", "8S")
+        if arg in SELECTION_STEP_C[voltage]:
+            _sel_log(callback, "step_c", f"{voltage}:{arg}")
+            await _sel_show_results(callback, state, voltage, arg)
+
+    elif action == "to8s" and current == SelectionState.step_c:
+        # Предустанавливаем 8S и показываем Вопрос В из 8S-ветки (диагностика продолжается)
+        await state.update_data(voltage="8S")
+        await state.set_state(SelectionState.step_c)
+        _sel_log(callback, "to8s", "8S")
+        await _sel_show_step_c(callback, "8S")
+
+    elif action == "search":
+        # Мостик в «🔎 Поиск»: фильтры предустановлены по итогам диагностики
+        params = dict(p.split("=", 1) for p in arg.split(":") if "=" in p)
+        voltage = params.get("v", "all")
+        drone = params.get("d", "all")
+        await state.clear()
+        _sel_log(callback, "search", f"v={voltage}:d={drone}")
+        try:
+            await callback.message.answer(
+                "🔎 Поиск АКБ\n\n"
+                "Отметьте нужные параметры — покажу подходящие модели:\n\n"
+                "⚡ <b>Напряжение</b>\n"
+                "🔋 <b>Ёмкость</b>\n"
+                "🚁 <b>Платформа</b>",
+                reply_markup=_build_search_kb(drone=drone, voltage=voltage),
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            system_logger.warning(f"Selection to-search failed: {e}")
+
+    # Неизвестный payload или клик не по текущему шагу FSM — просто закрываем «часики»
     await callback.answer()
 
 # NEW: карточка модели из результатов мульти-фильтра «🔎 Поиск» — с возвратом к результатам поиска.
@@ -900,12 +1006,8 @@ async def callback_search_model(callback: types.CallbackQuery):
             )],
         ]
     )
-    text = format_model(model_code)
-
-    try:
-        await callback.message.edit_text(text, reply_markup=back_kb, parse_mode="HTML")
-    except Exception:
-        await callback.message.edit_text(text, reply_markup=back_kb)
+    # MODIFIED: карточка через send_model_card (фото + подпись, если фото есть)
+    await send_model_card(callback, model_code, back_kb)
 
     await callback.answer()
 
@@ -913,13 +1015,23 @@ async def callback_search_model(callback: types.CallbackQuery):
 # NEW: точка входа в мульти-фильтр
 @dp.message(F.text == "🔎 Поиск")
 async def button_search(message: types.Message):
+    # MODIFIED: заголовки секций перенесены из label-кнопок в текст сообщения (HTML)
+    text = (
+        "🔎 Поиск АКБ\n\n"
+        "Отметьте нужные параметры — покажу подходящие модели:\n\n"
+        "⚡ <b>Напряжение</b>\n"
+        "🔋 <b>Ёмкость</b>\n"
+        "🚁 <b>Платформа</b>"
+    )
     await message.answer(
-        "🔎 Поиск АКБ\n\nНастройте фильтры:",
+        text,
         reply_markup=_build_search_kb(),
+        parse_mode="HTML",
     )
 
-# NEW: действия мульти-фильтра. Префикс "srch:" не пересекается с каскадом "flt:",
-# состояние фильтров передаётся в callback_data каждой кнопки (stateless).
+# MODIFIED: комментарий обновлён — каскад "flt:" удалён; префикс "srch:" уникален
+# относительно "sel:" (экспресс-подбор «🧠») и "model:" (карточки); состояние фильтров
+# передаётся в callback_data каждой кнопки (stateless).
 @dp.callback_query(F.data.startswith("srch:"))
 async def callback_search(callback: types.CallbackQuery):
     # Форматы callback_data (см. _build_search_kb):
@@ -988,11 +1100,19 @@ async def callback_search(callback: types.CallbackQuery):
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     else:
         # filter / reset / back — экран фильтров с актуальным состоянием
-        text = "🔎 Поиск АКБ\n\nНастройте фильтры:"
+        # MODIFIED: заголовки секций в тексте (HTML), как в button_search
+        text = (
+            "🔎 Поиск АКБ\n\n"
+            "Отметьте нужные параметры — покажу подходящие модели:\n\n"
+            "⚡ <b>Напряжение</b>\n"
+            "🔋 <b>Ёмкость</b>\n"
+            "🚁 <b>Платформа</b>"
+        )
         kb = _build_search_kb(drone=drone, voltage=voltage, cap_class=cap_class)
 
     try:
-        await callback.message.edit_text(text, reply_markup=kb)
+        # MODIFIED: parse_mode="HTML" — текст экрана фильтров содержит <b>-теги
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except Exception as e:
         system_logger.warning(f"Search edit failed: {e}")
 
