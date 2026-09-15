@@ -16,6 +16,8 @@
                            callback "fup:", данные data/followups.json); утренняя
                            сводка в 9:00 — ЭТАП 2 (в модуле есть хуки: DAILY_SEND_HOUR,
                            collect_due);
+  handlers/faq.py        — «❓ FAQ» — база частых вопросов клиентов (callback "faq:",
+                           FSM FaqState для поиска; данные data/faq.json);
   handlers/selection.py  — экспресс-подбор «🧠 Подбор» (FSM SelectionState, "sel:");
   handlers/search.py     — мульти-фильтр «🔎 Поиск» (callback "srch:", "srchm:");
   handlers/build.py      — «🔧 Своя сборка» (FSM BuildState, "build_conn:");

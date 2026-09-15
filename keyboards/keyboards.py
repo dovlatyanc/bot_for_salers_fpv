@@ -10,7 +10,7 @@ from utils import _apply_filters
 MAIN_BUTTONS = {
     "📊 ТТХ", "🧠 Подбор", "🎯 Сценарии", "🔎 Поиск", "🤖 AI-ассистент", "🛑 Стоп-лист",
     "📦 Памятка", "🔧 Своя сборка", "📝 Обратная связь",
-    "💰 Калькулятор", "📊 История расчётов", "⏰ Напоминания",
+    "💰 Калькулятор", "📊 История расчётов", "⏰ Напоминания", "❓ FAQ",
 }
 
 main_kb = ReplyKeyboardMarkup(
@@ -18,7 +18,7 @@ main_kb = ReplyKeyboardMarkup(
         [KeyboardButton(text="📊 ТТХ"), KeyboardButton(text="🔎 Поиск"), KeyboardButton(text="🤖 AI-ассистент")],
         [KeyboardButton(text="🧠 Подбор"), KeyboardButton(text="🎯 Сценарии"), KeyboardButton(text="🔧 Своя сборка")],
         [KeyboardButton(text="💰 Калькулятор"), KeyboardButton(text="📊 История расчётов"), KeyboardButton(text="⏰ Напоминания")],
-        [KeyboardButton(text="🛑 Стоп-лист"), KeyboardButton(text="📦 Памятка")],
+        [KeyboardButton(text="🛑 Стоп-лист"), KeyboardButton(text="📦 Памятка"), KeyboardButton(text="❓ FAQ")],
         [KeyboardButton(text="📝 Обратная связь")],
     ],
     resize_keyboard=True,
