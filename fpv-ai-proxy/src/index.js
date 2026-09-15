@@ -113,13 +113,25 @@ function buildPrompt(question) {
 <b>🗣 Что сказать клиенту:</b> (готовый скрипт, используй золотые фразы)
 <b>❓ Какие вопросы уточнить:</b> (список вопросов)
 
-ПРАВИЛА ДЛИНЫ И СОДЕРЖАНИЯ (критически важно):
-- Общий ответ НЕ длиннее 700 символов, кроме вопросов про конкретную модель (там можно до 1200 символов)
-- Пиши компактно, телеграфным стилем, без воды и повторов стандарта
-- Максимум 3 уточняющих вопроса
-- Секцию "🚩 Красные флаги" добавляй ТОЛЬКО если есть реальный стоп-фактор (перехват/ПВО/гонки, 8S8P на 10", бюджет массы < 1,3 кг, 8S без подтверждённых регуляторов, заряд на морозе)
-- Если стоп-факторов нет — НЕ пиши секцию "🚩 Красные флаги" вообще
-- Если стоп-фактор есть: НЕ БОЛЕЕ 5 ПУНКТОВ (жёсткий лимит), каждый пункт — одна короткая строка. Никогда не пиши больше 5 пунктов
+ПРАВИЛА ДЛИНЫ И СОДЕРЖАНИЯ (НАРУШЕНИЕ = НЕПРАВИЛЬНЫЙ ОТВЕТ):
+- ОБЩИЙ ЛИМИТ: 700 символов ВСЕГО ответа включая теги. Это ~4 предложения.
+- Для вопросов про конкретную модель: 1200 символов.
+- Секция "🚩 Красные флаги": МАКСИМУМ 3 пункта (не 5, а 3!).
+  Каждый пункт — ОДНА строка до 80 символов.
+  Если стоп-факторов нет — НЕ ПИСАТЬ эту секцию ВООБЩЕ.
+- НИКОГДА не перечисляй виды безопасности (хранение, транспортировка,
+  утилизация, ремонт, модернизация и т.д.) — это НЕ красные флаги.
+- НЕ повторяй стандарт дословно. Только суть применительно к вопросу.
+- Если ответ не помещается в лимит — сократи, а не превышай.
+
+ЖЁСТКОЕ ТРЕБОВАНИЕ ПО ДЛИНЕ:
+- Весь ответ — не более 700 символов.
+- Секция "🚩 Красные флаги" — максимум 3 пункта, каждый до 80 символов.
+- Если не хватает места — сокращай, но НЕ превышай лимит.
+- НИКОГДА не повторяй одну и ту же мысль дважды.
+- Заканчивай ответ после последней секции, не добавляй "воды" и призывов.
+- ЕСЛИ ты начал повторять одну и ту же мысль — НЕМЕДЛЕННО остановись.
+- Не пиши больше одного предложения про "золотые фразы".
 
 ЕСЛИ ВОПРОС ПРО КОНКРЕТНУЮ МОДЕЛЬ (6S4P, 8S6P, 14S12P и т.д.):
 Найди её в разделе "МОДЕЛЬНЫЙ РЯД" и дай точные ТТХ: ёмкость, массу, токи, сопротивление, применение.
@@ -150,6 +162,27 @@ ${question}
 Стандарт:
 ${STANDARD_CONTEXT}
 `.trim();
+}
+
+function trimAnswer(answer, maxLen) {
+  if (answer.length <= maxLen) return answer;
+
+  let cut = answer.slice(0, maxLen);
+  const lastBreak = Math.max(cut.lastIndexOf(" "), cut.lastIndexOf("\n"));
+  if (lastBreak > maxLen * 0.6) {
+    cut = cut.slice(0, lastBreak);
+  }
+
+  // Закрываем незакрытые теги
+  const openB = (cut.match(/<b>/g) || []).length;
+  const closeB = (cut.match(/<\/b>/g) || []).length;
+  if (openB > closeB) cut += "</b>";
+
+  const openI = (cut.match(/<i>/g) || []).length;
+  const closeI = (cut.match(/<\/i>/g) || []).length;
+  if (openI > closeI) cut += "</i>";
+
+  return cut.trimEnd() + "…";
 }
 
 export default {
@@ -183,7 +216,7 @@ export default {
 
         const audioArray = Array.from(new Uint8Array(audioData));
         const whisperModel = env.WHISPER_MODEL || "@cf/openai/whisper";
-        
+
         const result = await env.AI.run(whisperModel, {
           audio: audioArray
         });
@@ -208,13 +241,18 @@ export default {
     }
 
     try {
+      // Определяем тип вопроса ДО вызова AI для корректного max_tokens
+      const modelPattern = /\b\d+S\d+P\b/i;
+      const isModelQuestion = modelPattern.test(question);
+      const MAX_LEN = isModelQuestion ? 1200 : 700;
+
       const prompt = buildPrompt(question);
       const model = env.AI_MODEL || "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
       const result = await env.AI.run(model, {
         prompt,
-        max_tokens: 600,
-        temperature: 0.05,
+        max_tokens: isModelQuestion ? 400 : 280,
+        temperature: 0.25,
       });
 
       let answer = "";
@@ -226,23 +264,43 @@ export default {
       // ПОСТ-ОБРАБОТКА: обрезаем весь мусор до первого <b>💡 Вывод:</b>
       const startMarker = "<b>💡 Вывод:</b>";
       const startIndex = answer.indexOf(startMarker);
-      
+
       if (startIndex !== -1) {
         answer = answer.substring(startIndex);
       } else {
-        // Если модель забыла маркер, добавляем его в начало
         answer = startMarker + "\n" + answer;
       }
 
       // ПОСТ-ОБРАБОТКА: удаляем пустые/лишние секции "🚩 Красные флаги"
-      // (модель иногда пишет секцию без содержания или с шаблонной водой)
       const flagPatterns = [
-        /<b>🚩\s*Красные флаги:?<\/b>\s*$/i,          // пустая секция в конце
+        /<b>🚩\s*Красные флаги:?<\/b>\s*$/i,
         /<b>🚩\s*Красные флаги:?<\/b>\s*(нет|отсутствуют|не выявлено|стоп-факторов нет)\.?/gi
       ];
       for (const p of flagPatterns) {
         answer = answer.replace(p, "").trimEnd();
       }
+
+      // ПОСТ-ОБРАБОТКА: удаляем секцию красных флагов целиком если > 3 пунктов
+      answer = answer.replace(
+        /(<b>🚩\s*Красные флаги:?<\/b>)([\s\S]*?)(?=<b>[^<]|$)/gi,
+        (match, header, content) => {
+          const lines = content.trim().split('\n').filter(l => l.trim());
+          return lines.length > 3 ? '' : match;
+        }
+      );
+
+      // ПОСТ-ОБРАБОТКА: универсальная очистка зацикливаний на "золотых фразах"
+      answer = answer.replace(
+        /[\s\S]*?(?:золот(?:ые|ых|ыми)\s+фраз(?:ы|ам|ами)[\s\S]*)$/i, ""
+      ).trimEnd();
+
+      // ПОСТ-ОБРАБОТКА: убираем шаблонные призывы в конце
+      answer = answer.replace(
+        /[\s\S]*?(?:Это поможет|Помните|Всегда помните|Удачи в продажах|Хороших продаж)[\s\S]*$/i, ""
+      ).trimEnd();
+
+      // ФИНАЛЬНАЯ обрезка по лимиту символов
+      answer = trimAnswer(answer, MAX_LEN);
 
       return Response.json({ ok: true, answer: answer.trim(), model });
     } catch (error) {

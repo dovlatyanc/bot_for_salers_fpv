@@ -1,0 +1,51 @@
+MODELS = {
+    "6S2P": {"mah": 8000, "kg": 0.90, "cont": 70, "peak": 90, "charge": 4, "mohm": 19.5, "w": 45, "best": "Тренировочные и ближние вылеты", "warn": "Не для катушки и груза. Осторожно при резком пилотировании", "drones": ["7","9","10"], "voltage": "6S", "connector": "XT60", "cap_class": "light", "photo": "fpv-ai-proxy/src/AKB_IMAGES/6s2p_8000.png"},  # PHOTO ADDED
+    "6S3P": {"mah": 12000, "kg": 1.34, "cont": 105, "peak": 135, "charge": 6, "mohm": 13.0, "w": 67, "best": '10" с катушкой 20 км и малым грузом', "warn": "Проверять ток, если дрон тяжёлый или пилотирование резкое", "drones": ["10"], "voltage": "6S", "connector": "XT60", "cap_class": "light", "photo": "fpv-ai-proxy/src/AKB_IMAGES/6s3p_12000.png"},  # PHOTO ADDED
+    "6S4P": {"mah": 16000, "kg": 1.77, "cont": 140, "peak": 180, "charge": 8, "mohm": 9.8, "w": 89, "best": 'Стандарт 10"; катушка 10 км; рабочие задачи', "warn": None, "drones": ["10"], "voltage": "6S", "connector": "XT60", "cap_class": "standard", "photo": "fpv-ai-proxy/src/AKB_IMAGES/6s4p_16000.png"},  # PHOTO ADDED
+    "6S5P": {"mah": 20000, "kg": 2.20, "cont": 175, "peak": 225, "charge": 10, "mohm": 7.8, "w": 111, "best": '10" long-range с грузом 1–1,5 кг', "warn": None, "drones": ["10"], "voltage": "6S", "connector": "XT60", "cap_class": "standard", "photo": "fpv-ai-proxy/src/AKB_IMAGES/6s5p_20000.png"},  # PHOTO ADDED
+    "6S6P": {"mah": 24000, "kg": 2.63, "cont": 210, "peak": 270, "charge": 12, "mohm": 6.5, "w": 133, "best": 'Максимум дальности на 10" без катушки; из практики около 26 км с остатком', "warn": 'Не лучший вариант для 10" с катушкой 20–30 км', "drones": ["10"], "voltage": "6S", "connector": "XT60", "cap_class": "long", "photo": "fpv-ai-proxy/src/AKB_IMAGES/6s6p_24000.png"},  # PHOTO ADDED
+    "8S2P XT-90-S": {"mah": 8000, "kg": 1.19, "cont": 70, "peak": 90, "charge": 4, "mohm": 26.0, "w": 45, "best": "Минимальный вес, ближний полёт, лёгкие 8S-платформы", "warn": "Не для резкого пилотирования и тяжёлых задач", "drones": ["12","13","15"], "voltage": "8S", "connector": "XT90-S", "cap_class": "light","photo": "fpv-ai-proxy/src/AKB_IMAGES/8s2p_8000.png"},
+    "8S2P XT-60": {"mah": 8000, "kg": 1.19, "cont": 70, "peak": 90, "charge": 4, "mohm": 26.0, "w": 45, "best": "Минимальный вес, ближний полёт, лёгкие 8S-платформы", "warn": "Не для резкого пилотирования и тяжёлых задач", "drones": ["10"], "voltage": "8S", "connector": "XT60", "cap_class": "light","photo": "fpv-ai-proxy/src/AKB_IMAGES/8s2p_8000.png"},
+    "8S3P": {"mah": 12000, "kg": 1.77, "cont": 105, "peak": 135, "charge": 6, "mohm": 17.3, "w": 67, "best": 'Лёгкие 8S-платформы без катушки; спец-10" на 8S', "warn": None, "drones": ["12","13","15"], "voltage": "8S", "connector": "XT90-S", "cap_class": "light", "photo": "fpv-ai-proxy/src/AKB_IMAGES/8s3p_12000.png"},  # PHOTO ADDED
+    "8S4P": {"mah": 16000, "kg": 2.34, "cont": 140, "peak": 180, "charge": 8, "mohm": 13.0, "w": 89, "best": 'Вход в класс 13"; спец-10" на 8S', "warn": None, "drones": ["13","15", "hex"], "voltage": "8S", "connector": "XT90-S", "cap_class": "standard", "photo": "fpv-ai-proxy/src/AKB_IMAGES/8s4p_16000.png"},  # MODIFIED: добавлен "hex"; PHOTO ADDED
+    "8S5P": {"mah": 20000, "kg": 2.92, "cont": 175, "peak": 225, "charge": 10, "mohm": 10.4, "w": 111, "best": '13" при ограничении массы; спец-10" на 8S для дальних вылетов', "warn": None, "drones": [ "15", "hex"], "voltage": "8S", "connector": "XT90-S", "cap_class": "standard", "photo": "fpv-ai-proxy/src/AKB_IMAGES/8s5p_20000.png"},  # MODIFIED: добавлен "hex"; PHOTO ADDED
+    "8S6P": {"mah": 24000, "kg": 3.50, "cont": 210, "peak": 270, "charge": 12, "mohm": 8.7, "w": 133, "best": 'Оптимум 13"/15": тепловизор, катушка 20 км, возвратная разведка', "warn": 'Не для 10" с катушкой 20–30 км', "drones": [ "13","15", "hex"], "voltage": "8S", "connector": "XT90-S", "cap_class": "long", "photo": "fpv-ai-proxy/src/AKB_IMAGES/8s6p_24000.png"},  # MODIFIED: добавлен "hex"; PHOTO ADDED
+    "8S7P": {"mah": 28000, "kg": 4.07, "cont": 245, "peak": 315, "charge": 14, "mohm": 7.4, "w": 155, "best": '15"/гекса; " с большим запасом тяги', "warn": "Тяжёлая; проверять лимит массы носителя", "drones": ["15", "hex"], "voltage": "8S", "connector": "XT90-S", "cap_class": "long", "photo": "fpv-ai-proxy/src/AKB_IMAGES/8s7p_28000.png"},  # PHOTO ADDED
+    "8S8P": {"mah": 32000, "kg": 4.65, "cont": 280, "peak": 360, "charge": 16, "mohm": 6.5, "w": 177, "best": '15", гексакоптер, максимальная автономность, катушка 30 км на тяжёлом носителе', "warn": 'Никогда не ставить на стандартную 10"', "drones": ["15", "hex"], "voltage": "8S", "connector": "XT90-S", "cap_class": "long", "photo": "fpv-ai-proxy/src/AKB_IMAGES/8s8p_32000.png"},  # PHOTO ADDED
+}
+
+# === допустимые значения для машинной фильтрации ===
+PLATFORMS = ["7", "9", "10", "12", "13", "15", "hex"]
+VOLTAGES = ["6S", "8S"]
+CAP_CLASSES = ["light", "standard", "long"]
+
+FILTER_LABELS = {
+    "drone": {"7": "7\"", "9": "9\"", "10": "10\"", "12": "12\"",
+              "13": "13\"", "15": "15\"", "hex": "Гексакоптер"},
+    "voltage": {"6S": "6S (22.2 В)", "8S": "8S (29.6 В)", "all": "Все"},
+    "cap_class": {"light": "Лёгкие (≤12Ач)", "standard": "Стандарт (12–20Ач)",
+                  "long": "Макс. дальность (>20Ач)", "all": "Все"},
+}
+
+# --- данные экспресс-подбора «🧠» ---
+SELECTION_STEP_C = {
+    "6S": {
+        "light": ("Ничего / до 0,7 кг", ["6S6P", "6S5P"]),
+        "cargo": ("Груз 1–1,5 кг", ["6S5P", "6S4P"]),
+        "ru20":  ("Катушка 20 км", ["6S3P", "6S4P"]),
+    },
+    "8S": {
+        "thermal": ("Тепловизор, без катушки", ["8S6P", "8S5P"]),
+        "ru20g":   ("Катушка 20 км + груз", ["8S6P", "8S4P"]),
+        "ru30":    ("Катушка 30 км / макс. автономность", ["8S8P", "8S7P"]),
+        "spec10":  ('Спец-10" лёгкая', ["8S4P", "8S3P"]),
+    },
+}
+SELECTION_6S_CONFLICT = "cl"
+SELECTION_6S_CONFLICT_LABEL = "Катушка 20 км + груз от 1 кг"
+SELECTION_DRONE_BY_VOLTAGE = {"6S": "10", "8S": "all"}
+
+SEL_STEP_A_TEXT = (
+    "🧠 Экспресс-подбор АКБ — 3 вопроса\n\n"
+    "Вопрос 1/3: Дрон на 6S или на 8S?"
+)

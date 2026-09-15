@@ -92,6 +92,13 @@ else:
 
 dp = Dispatcher(storage=MemoryStorage())
 
+# NEW: подключение модульных обработчиков пакета handlers — до основных хендлеров ниже,
+# чтобы FSM-ввод калькулятора не перехватывался fallback-хендлером AI.
+# handlers/calculator.py не импортирует bot.py (зависимости в одну сторону).
+from handlers.calculator import router as calculator_router  # NEW: «💰 Калькулятор», «📊 История расчётов», /cancel
+dp.include_router(calculator_router)
+
+
 
 # ============================================================
 # СОСТОЯНИЯ (для обратной связи и калькулятора)
@@ -101,12 +108,16 @@ class FeedbackState(StatesGroup):
 
 class BuildState(StatesGroup):
     waiting_for_config = State()
+    waiting_for_connector = State()  # NEW: выбор/ввод разъёма для «Своя сборка»
 
 # NEW: состояния экспресс-диагностики «🧠 Подбор» (Приложение 4 стандарта продаж)
 class SelectionState(StatesGroup):
     step_a = State()  # Вопрос А: 6S / 8S / не знаю
     step_b = State()  # Вопрос Б: рывок (LiPo — отказ) или километры
     step_c = State()  # Вопрос В: нагрузка на борту (варианты зависят от напряжения)
+    # NEW: ветка «Не знаю» — подбор по дрону: дрон → рама → подходящие АКБ
+    step_drone = State()
+    step_frame = State()
 
 
 # ============================================================
@@ -114,19 +125,19 @@ class SelectionState(StatesGroup):
 # ТТХ МОДЕЛЕЙ
 # ============================================================
 MODELS = {
-    "6S2P": {"mah": 8000, "kg": 0.90, "cont": 70, "peak": 90, "charge": 4, "mohm": 19.5, "w": 45, "best": "Тренировочные и ближние вылеты", "warn": "Не для катушки и груза. Осторожно при резком пилотировании", "drones": ["7","9","10"], "voltage": "6S", "cap_class": "light", "photo": "fpv-ai-proxy/src/AKB_IMAGES/6s2p_8000.png"},  # PHOTO ADDED
-    "6S3P": {"mah": 12000, "kg": 1.34, "cont": 105, "peak": 135, "charge": 6, "mohm": 13.0, "w": 67, "best": '10" с катушкой 20 км и малым грузом', "warn": "Проверять ток, если дрон тяжёлый или пилотирование резкое", "drones": ["10"], "voltage": "6S", "cap_class": "light", "photo": "fpv-ai-proxy/src/AKB_IMAGES/6s3p_12000.png"},  # PHOTO ADDED
-    "6S4P": {"mah": 16000, "kg": 1.77, "cont": 140, "peak": 180, "charge": 8, "mohm": 9.8, "w": 89, "best": 'Стандарт 10"; катушка 10 км; рабочие задачи', "warn": None, "drones": ["10"], "voltage": "6S", "cap_class": "standard", "photo": "fpv-ai-proxy/src/AKB_IMAGES/6s4p_16000.png"},  # PHOTO ADDED
-    "6S5P": {"mah": 20000, "kg": 2.20, "cont": 175, "peak": 225, "charge": 10, "mohm": 7.8, "w": 111, "best": '10" long-range с грузом 1–1,5 кг', "warn": None, "drones": ["10"], "voltage": "6S", "cap_class": "standard", "photo": "fpv-ai-proxy/src/AKB_IMAGES/6s5p_20000.png"},  # PHOTO ADDED
-    "6S6P": {"mah": 24000, "kg": 2.63, "cont": 210, "peak": 270, "charge": 12, "mohm": 6.5, "w": 133, "best": 'Максимум дальности на 10" без катушки; из практики около 26 км с остатком', "warn": 'Не лучший вариант для 10" с катушкой 20–30 км', "drones": ["10"], "voltage": "6S", "cap_class": "long", "photo": "fpv-ai-proxy/src/AKB_IMAGES/6s6p_24000.png"},  # PHOTO ADDED
-    "8S2P XT-90-S": {"mah": 8000, "kg": 1.19, "cont": 70, "peak": 90, "charge": 4, "mohm": 26.0, "w": 45, "best": "Минимальный вес, ближний полёт, лёгкие 8S-платформы", "warn": "Не для резкого пилотирования и тяжёлых задач", "drones": ["12","13","15"], "voltage": "8S", "cap_class": "light","photo": "fpv-ai-proxy/src/AKB_IMAGES/8s2p_8000.png"},
-    "8S2P XT-60": {"mah": 8000, "kg": 1.19, "cont": 70, "peak": 90, "charge": 4, "mohm": 26.0, "w": 45, "best": "Минимальный вес, ближний полёт, лёгкие 8S-платформы", "warn": "Не для резкого пилотирования и тяжёлых задач", "drones": ["10"], "voltage": "8S", "cap_class": "light","photo": "fpv-ai-proxy/src/AKB_IMAGES/8s2p_8000.png"},
-    "8S3P": {"mah": 12000, "kg": 1.77, "cont": 105, "peak": 135, "charge": 6, "mohm": 17.3, "w": 67, "best": 'Лёгкие 8S-платформы без катушки; спец-10" на 8S', "warn": None, "drones": ["10"], "voltage": "8S", "cap_class": "light", "photo": "fpv-ai-proxy/src/AKB_IMAGES/8s3p_12000.png"},  # PHOTO ADDED
-    "8S4P": {"mah": 16000, "kg": 2.34, "cont": 140, "peak": 180, "charge": 8, "mohm": 13.0, "w": 89, "best": 'Вход в класс 13"; спец-10" на 8S', "warn": None, "drones": ["10", "13", "hex"], "voltage": "8S", "cap_class": "standard", "photo": "fpv-ai-proxy/src/AKB_IMAGES/8s4p_16000.png"},  # MODIFIED: добавлен "hex"; PHOTO ADDED
-    "8S5P": {"mah": 20000, "kg": 2.92, "cont": 175, "peak": 225, "charge": 10, "mohm": 10.4, "w": 111, "best": '13" при ограничении массы; спец-10" на 8S для дальних вылетов', "warn": None, "drones": ["10", "13", "hex"], "voltage": "8S", "cap_class": "standard", "photo": "fpv-ai-proxy/src/AKB_IMAGES/8s5p_20000.png"},  # MODIFIED: добавлен "hex"; PHOTO ADDED
-    "8S6P": {"mah": 24000, "kg": 3.50, "cont": 210, "peak": 270, "charge": 12, "mohm": 8.7, "w": 133, "best": 'Оптимум 13"/15": тепловизор, катушка 20 км, возвратная разведка', "warn": 'Не для 10" с катушкой 20–30 км', "drones": ["10", "13", "15", "hex"], "voltage": "8S", "cap_class": "long", "photo": "fpv-ai-proxy/src/AKB_IMAGES/8s6p_24000.png"},  # MODIFIED: добавлен "hex"; PHOTO ADDED
-    "8S7P": {"mah": 28000, "kg": 4.07, "cont": 245, "peak": 315, "charge": 14, "mohm": 7.4, "w": 155, "best": '15"/гекса; 13" с большим запасом тяги', "warn": "Тяжёлая; проверять лимит массы носителя", "drones": ["13", "15", "hex"], "voltage": "8S", "cap_class": "long", "photo": "fpv-ai-proxy/src/AKB_IMAGES/8s7p_28000.png"},  # PHOTO ADDED
-    "8S8P": {"mah": 32000, "kg": 4.65, "cont": 280, "peak": 360, "charge": 16, "mohm": 6.5, "w": 177, "best": '15", гексакоптер, максимальная автономность, катушка 30 км на тяжёлом носителе', "warn": 'Никогда не ставить на стандартную 10"', "drones": ["15", "hex"], "voltage": "8S", "cap_class": "long", "photo": "fpv-ai-proxy/src/AKB_IMAGES/8s8p_32000.png"},  # PHOTO ADDED
+    "6S2P": {"mah": 8000, "kg": 0.90, "cont": 70, "peak": 90, "charge": 4, "mohm": 19.5, "w": 45, "best": "Тренировочные и ближние вылеты", "warn": "Не для катушки и груза. Осторожно при резком пилотировании", "drones": ["7","9","10"], "voltage": "6S", "connector": "XT60", "cap_class": "light", "photo": "fpv-ai-proxy/src/AKB_IMAGES/6s2p_8000.png"},  # PHOTO ADDED
+    "6S3P": {"mah": 12000, "kg": 1.34, "cont": 105, "peak": 135, "charge": 6, "mohm": 13.0, "w": 67, "best": '10" с катушкой 20 км и малым грузом', "warn": "Проверять ток, если дрон тяжёлый или пилотирование резкое", "drones": ["10"], "voltage": "6S", "connector": "XT60", "cap_class": "light", "photo": "fpv-ai-proxy/src/AKB_IMAGES/6s3p_12000.png"},  # PHOTO ADDED
+    "6S4P": {"mah": 16000, "kg": 1.77, "cont": 140, "peak": 180, "charge": 8, "mohm": 9.8, "w": 89, "best": 'Стандарт 10"; катушка 10 км; рабочие задачи', "warn": None, "drones": ["10"], "voltage": "6S", "connector": "XT60", "cap_class": "standard", "photo": "fpv-ai-proxy/src/AKB_IMAGES/6s4p_16000.png"},  # PHOTO ADDED
+    "6S5P": {"mah": 20000, "kg": 2.20, "cont": 175, "peak": 225, "charge": 10, "mohm": 7.8, "w": 111, "best": '10" long-range с грузом 1–1,5 кг', "warn": None, "drones": ["10"], "voltage": "6S", "connector": "XT60", "cap_class": "standard", "photo": "fpv-ai-proxy/src/AKB_IMAGES/6s5p_20000.png"},  # PHOTO ADDED
+    "6S6P": {"mah": 24000, "kg": 2.63, "cont": 210, "peak": 270, "charge": 12, "mohm": 6.5, "w": 133, "best": 'Максимум дальности на 10" без катушки; из практики около 26 км с остатком', "warn": 'Не лучший вариант для 10" с катушкой 20–30 км', "drones": ["10"], "voltage": "6S", "connector": "XT60", "cap_class": "long", "photo": "fpv-ai-proxy/src/AKB_IMAGES/6s6p_24000.png"},  # PHOTO ADDED
+    "8S2P XT-90-S": {"mah": 8000, "kg": 1.19, "cont": 70, "peak": 90, "charge": 4, "mohm": 26.0, "w": 45, "best": "Минимальный вес, ближний полёт, лёгкие 8S-платформы", "warn": "Не для резкого пилотирования и тяжёлых задач", "drones": ["12","13","15"], "voltage": "8S", "connector": "XT90-S", "cap_class": "light","photo": "fpv-ai-proxy/src/AKB_IMAGES/8s2p_8000.png"},
+    "8S2P XT-60": {"mah": 8000, "kg": 1.19, "cont": 70, "peak": 90, "charge": 4, "mohm": 26.0, "w": 45, "best": "Минимальный вес, ближний полёт, лёгкие 8S-платформы", "warn": "Не для резкого пилотирования и тяжёлых задач", "drones": ["10"], "voltage": "8S", "connector": "XT60", "cap_class": "light","photo": "fpv-ai-proxy/src/AKB_IMAGES/8s2p_8000.png"},
+    "8S3P": {"mah": 12000, "kg": 1.77, "cont": 105, "peak": 135, "charge": 6, "mohm": 17.3, "w": 67, "best": 'Лёгкие 8S-платформы без катушки; спец-10" на 8S', "warn": None, "drones": ["12","13","15"], "voltage": "8S", "connector": "XT90-S", "cap_class": "light", "photo": "fpv-ai-proxy/src/AKB_IMAGES/8s3p_12000.png"},  # PHOTO ADDED
+    "8S4P": {"mah": 16000, "kg": 2.34, "cont": 140, "peak": 180, "charge": 8, "mohm": 13.0, "w": 89, "best": 'Вход в класс 13"; спец-10" на 8S', "warn": None, "drones": ["13","15", "hex"], "voltage": "8S", "connector": "XT90-S", "cap_class": "standard", "photo": "fpv-ai-proxy/src/AKB_IMAGES/8s4p_16000.png"},  # MODIFIED: добавлен "hex"; PHOTO ADDED
+    "8S5P": {"mah": 20000, "kg": 2.92, "cont": 175, "peak": 225, "charge": 10, "mohm": 10.4, "w": 111, "best": '13" при ограничении массы; спец-10" на 8S для дальних вылетов', "warn": None, "drones": [ "15", "hex"], "voltage": "8S", "connector": "XT90-S", "cap_class": "standard", "photo": "fpv-ai-proxy/src/AKB_IMAGES/8s5p_20000.png"},  # MODIFIED: добавлен "hex"; PHOTO ADDED
+    "8S6P": {"mah": 24000, "kg": 3.50, "cont": 210, "peak": 270, "charge": 12, "mohm": 8.7, "w": 133, "best": 'Оптимум 13"/15": тепловизор, катушка 20 км, возвратная разведка', "warn": 'Не для 10" с катушкой 20–30 км', "drones": [ "13","15", "hex"], "voltage": "8S", "connector": "XT90-S", "cap_class": "long", "photo": "fpv-ai-proxy/src/AKB_IMAGES/8s6p_24000.png"},  # MODIFIED: добавлен "hex"; PHOTO ADDED
+    "8S7P": {"mah": 28000, "kg": 4.07, "cont": 245, "peak": 315, "charge": 14, "mohm": 7.4, "w": 155, "best": '15"/гекса; " с большим запасом тяги', "warn": "Тяжёлая; проверять лимит массы носителя", "drones": ["15", "hex"], "voltage": "8S", "connector": "XT90-S", "cap_class": "long", "photo": "fpv-ai-proxy/src/AKB_IMAGES/8s7p_28000.png"},  # PHOTO ADDED
+    "8S8P": {"mah": 32000, "kg": 4.65, "cont": 280, "peak": 360, "charge": 16, "mohm": 6.5, "w": 177, "best": '15", гексакоптер, максимальная автономность, катушка 30 км на тяжёлом носителе', "warn": 'Никогда не ставить на стандартную 10"', "drones": ["15", "hex"], "voltage": "8S", "connector": "XT90-S", "cap_class": "long", "photo": "fpv-ai-proxy/src/AKB_IMAGES/8s8p_32000.png"},  # PHOTO ADDED
 }
 
 # === КАСКАДНЫЙ ФИЛЬТР ===
@@ -214,9 +225,11 @@ def _build_search_kb(drone: str = "all", voltage: str = "all", cap_class: str = 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 # MODIFIED: добавлена кнопка "🔎 Поиск" (мульти-фильтр)
+# NEW: кнопки «💰 Калькулятор» и «📊 История расчётов» (handlers/calculator.py)
 MAIN_BUTTONS = {
     "📊 ТТХ", "🧠 Подбор", "🔎 Поиск", "🤖 AI-ассистент", "🛑 Стоп-лист",
-    "📦 Памятка", "🔧 Своя сборка", "📝 Обратная связь"
+    "📦 Памятка", "🔧 Своя сборка", "📝 Обратная связь",
+    "💰 Калькулятор", "📊 История расчётов"
 }
 
 # MODIFIED: кнопка "🔎 Поиск" в первой строке рядом с "📊 ТТХ"
@@ -224,6 +237,7 @@ main_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📊 ТТХ"), KeyboardButton(text="🔎 Поиск"), KeyboardButton(text="🤖 AI-ассистент")],
         [KeyboardButton(text="🧠 Подбор"), KeyboardButton(text="🔧 Своя сборка")],
+        [KeyboardButton(text="💰 Калькулятор"), KeyboardButton(text="📊 История расчётов")],  # NEW: калькулятор маржи
         [KeyboardButton(text="🛑 Стоп-лист"), KeyboardButton(text="📦 Памятка")],
         [KeyboardButton(text="📝 Обратная связь")],
     ],
@@ -336,10 +350,14 @@ def format_model(model_code: str) -> tuple[str, str | None]:  # MODIFIED: воз
 
     if row == "6S":
         nominal_v, max_charge_v, work_min_v, abs_min_v = 22.2, 25.2, 18.0, 15.0
-        connector, balance, length = "XT60", "JST-XH 7-pin", 133
+        balance, length = "JST-XH 7-pin", 133
     else:
         nominal_v, max_charge_v, work_min_v, abs_min_v = 29.6, 33.6, 24.0, 20.0
-        connector, balance, length = "XT90-S", "JST-XH 9-pin", 177
+        balance, length = "JST-XH 9-pin", 177
+
+    # MODIFIED: разъём читается из поля модели — "8S2P XT-60" теперь корректно показывает XT60;
+    # баланс и габариты остались по ряду (от разъёма не зависят)
+    connector = m.get("connector", "XT90-S" if row != "6S" else "XT60")
 
     wh = round(nominal_v * m["mah"] / 1000)
 
@@ -428,6 +446,8 @@ async def cmd_start(message: types.Message):
 🧠 Подбор — экспресс-подбор по задаче за 3 вопроса
 🤖 AI-ассистент — вопрос по клиенту или возражению
 🔧 Своя сборка — расчёт нестандартной конфигурации
+💰 Калькулятор — маржа и рекомендация по скидке
+📊 История расчётов — последние 5 расчётов
 🛑 Стоп-лист — что нельзя говорить и продавать
 📦 Памятка — шаблон для клиента после продажи
 📝 Обратная связь — написать администратору
@@ -604,31 +624,127 @@ async def process_build(message: types.Message, state: FSMContext):
     charge_a = 2 * p # 0.5C от 4*P Ач = 2*P
     
     total_cells = s * p
-    connector = "XT90-S" if s > 6 else "XT60"
     balance_pins = s + 1
+    # DELETED: connector = "XT90-S" if s > 6 else "XT60" — разъём теперь выбирает пользователь
     
+    # MODIFIED: параметры сохраняются в FSM; итоговый расчёт отправляется после выбора разъёма
+    await state.update_data(
+        s=s, p=p,
+        nom_v=nom_v, max_v=max_v, work_min_v=work_min_v, abs_min_v=abs_min_v,
+        cap_mah=cap_mah, cap_ah=cap_ah, energy_wh=energy_wh,
+        weight_kg=weight_kg, cont_a=cont_a, peak_a=peak_a, charge_a=charge_a,
+        total_cells=total_cells, balance_pins=balance_pins,
+    )
+    await state.set_state(BuildState.waiting_for_connector)
+
+    if s <= 6:
+        # NEW: 6S и ниже — XT60 по умолчанию; подтверждение («ок») или другой разъём — текстом
+        await state.update_data(connector="XT60")
+        await message.answer(
+            f"Расчёт для {s}S{p}P готов.\n\n"
+            "Разъём по умолчанию: <b>XT60</b>.\n"
+            "Отправьте «ок» — оставить XT60, или напишите другой тип разъёма:",
+            parse_mode="HTML",
+        )
+    else:
+        # NEW: 8S и выше — разъём заранее неизвестен (бывают сборки на XT60/XT150), выбор кнопками
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[[
+                InlineKeyboardButton(text="XT90-S", callback_data="build_conn:XT90S"),
+                InlineKeyboardButton(text="XT60", callback_data="build_conn:XT60"),
+                InlineKeyboardButton(text="Другой", callback_data="build_conn:other"),
+            ]]
+        )
+        await message.answer(f"Выберите разъём для {s}S{p}P:", reply_markup=kb)
+
+
+# NEW: отправка итогового расчёта «Своя сборка» с подставленным разъёмом.
+# target — types.Message или types.CallbackQuery.message. Формулы расчёта не менялись:
+# текст собирается из параметров, сохранённых process_build в FSM.
+async def _send_build_result(target, data: dict, connector: str) -> None:
     text = f"""
-<b>Расчёт для {s}S{p}P:</b>
+<b>Расчёт для {data['s']}S{data['p']}P:</b>
 
-Ячеек всего: {total_cells} шт. (21700)
+Ячеек всего: {data['total_cells']} шт. (21700)
 
-Ёмкость: {cap_mah} мА·ч ({cap_ah} А·ч)
-Энергия: ~{energy_wh:.0f} Вт·ч
-Масса сборки: ~{weight_kg:.2f} кг
+Ёмкость: {data['cap_mah']} мА·ч ({data['cap_ah']} А·ч)
+Энергия: ~{data['energy_wh']:.0f} Вт·ч
+Масса сборки: ~{data['weight_kg']:.2f} кг
 
-Напряжение номинал: {nom_v:.1f} В
-Заряд (макс): {max_v:.1f} В
-Разряд (рабочий): не ниже {work_min_v:.1f} В
-Абсолютный минимум: {abs_min_v:.1f} В
+Напряжение номинал: {data['nom_v']:.1f} В
+Заряд (макс): {data['max_v']:.1f} В
+Разряд (рабочий): не ниже {data['work_min_v']:.1f} В
+Абсолютный минимум: {data['abs_min_v']:.1f} В
 
-Ток длительно: {cont_a} А
-Ток пиково: {peak_a} А
-Ток заряда (0,5C): {charge_a} А
+Ток длительно: {data['cont_a']} А
+Ток пиково: {data['peak_a']} А
+Ток заряда (0,5C): {data['charge_a']} А
 
 Разъём: {connector}
-Балансир: {balance_pins}-pin
+Балансир: {data['balance_pins']}-pin
 """
-    await message.answer(text, parse_mode="HTML")
+    # Сообщение бота с кнопками выбора редактируем (клавиатура больше не нужна),
+    # ответ пользователя — отправляем новым сообщением
+    if isinstance(target, types.Message) and target.from_user and target.from_user.id == bot.id:
+        try:
+            await target.edit_text(text, parse_mode="HTML", reply_markup=None)
+            return
+        except Exception as e:
+            system_logger.warning(f"Build result edit failed: {e}")
+    await target.answer(text, parse_mode="HTML")
+
+
+# NEW: выбор разъёма кнопками (8S и выше) / переход к текстовому вводу («Другой»)
+@dp.callback_query(F.data.startswith("build_conn:"))
+async def callback_build_connector(callback: types.CallbackQuery, state: FSMContext):
+    choice = callback.data.split(":", 1)[1]
+
+    data = await state.get_data()
+    if "s" not in data or "p" not in data:
+        # Кнопка нажата после сброса state — просим начать заново
+        await state.clear()
+        await callback.message.answer(
+            "Сессия расчёта истекла. Нажмите «🔧 Своя сборка» и введите конфигурацию заново."
+        )
+        await callback.answer()
+        return
+
+    if choice == "other":
+        # Остаемся в BuildState.waiting_for_connector — тип разъёма придёт текстом
+        await callback.message.answer("Напишите тип разъёма:")
+        await callback.answer()
+        return
+
+    connector = "XT90-S" if choice == "XT90S" else "XT60"
+
+    await _send_build_result(callback.message, data, connector)
+    await state.clear()
+    await callback.answer()
+
+
+# NEW: текстовый ввод разъёма для «Своя сборка» (нестандартный разъём или подтверждение)
+@dp.message(BuildState.waiting_for_connector)
+async def process_build_connector(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    if "s" not in data or "p" not in data:
+        await state.clear()
+        await message.answer(
+            "Сессия расчёта истекла. Нажмите «🔧 Своя сборка» и введите конфигурацию заново."
+        )
+        return
+
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Напишите тип разъёма текстом.")
+        return
+
+    if text.lower() in {"ок", "ok", "-", "✅"}:
+        # Подтверждение разъёма по умолчанию (ветка 6S и ниже)
+        connector = data.get("connector") or "XT60"
+    else:
+        connector = text
+
+    await _send_build_result(message, data, connector)
     await state.clear()
 
 
@@ -784,6 +900,43 @@ def _sel_step_b_kb() -> InlineKeyboardMarkup:
     ])
 
 
+# ============================================================
+# NEW: ветка «Не знаю» — подбор по дрону (дрон → рама → АКБ)
+# ============================================================
+def _sel_drone_codes() -> list[str]:
+    # NEW: дроны из каталога (порядок PLATFORMS), под которые есть хотя бы одна модель в MODELS
+    return [d for d in PLATFORMS if any(d in m["drones"] for m in MODELS.values())]
+
+
+def _sel_drone_frames(drone: str) -> list[str]:
+    # NEW: рамы для дрона — уникальные значения "voltage" из моделей, где этот дрон есть в "drones".
+    # Список рам НЕ хардкодится, а генерируется из актуального MODELS.
+    return sorted({m["voltage"] for m in MODELS.values() if drone in m["drones"]})
+
+
+def _sel_step_drone_kb() -> InlineKeyboardMarkup:
+    # NEW: кнопки выбора дрона в ветке «Не знаю»
+    rows = [[(FILTER_LABELS["drone"][d], f"sel:dr:{d}")] for d in _sel_drone_codes()]
+    rows.append([("⬅️ Начать заново", "sel:restart")])
+    return _sel_kb(rows)
+
+
+def _sel_step_frame_kb(drone: str) -> InlineKeyboardMarkup:
+    # NEW: кнопки выбора рамы — только те рамы, под которые реально есть модели в MODELS
+    rows = [[(FILTER_LABELS["voltage"][f], f"sel:fr:{f}")] for f in _sel_drone_frames(drone)]
+    rows.append([("⬅️ Выбрать другой дрон", "sel:drback")])
+    rows.append([("⬅️ Начать заново", "sel:restart")])
+    return _sel_kb(rows)
+
+
+def _sel_unk_none_kb() -> InlineKeyboardMarkup:
+    # NEW: пустой результат — понятное сообщение с кнопками «другой дрон» и «заново»
+    return _sel_kb([
+        [("⬅️ Выбрать другой дрон", "sel:drback")],
+        [("⬅️ Начать заново", "sel:restart")],
+    ])
+
+
 def _sel_log(callback: types.CallbackQuery, step: str, choice: str) -> None:
     # NEW: логирование шага экспресс-подбора (dialog_logger)
     dialog_logger.info(json.dumps({
@@ -826,6 +979,77 @@ async def _sel_show_step_c(callback: types.CallbackQuery, voltage: str) -> None:
         )
     except Exception as e:
         system_logger.warning(f"Selection step_c edit failed: {e}")
+
+
+async def _sel_show_step_drone(callback: types.CallbackQuery, state: FSMContext) -> None:
+    # NEW: экран выбора дрона в ветке «Не знаю»
+    await state.set_state(SelectionState.step_drone)
+    try:
+        await callback.message.edit_text(
+            "🧠 Экспресс-подбор АКБ — «Не знаю»\n\n"
+            "Подберу АКБ по дрону. Выберите дрон:",
+            reply_markup=_sel_step_drone_kb(),
+        )
+    except Exception as e:
+        system_logger.warning(f"Selection step_drone edit failed: {e}")
+
+
+async def _sel_show_step_frame(callback: types.CallbackQuery, state: FSMContext, drone: str) -> None:
+    # NEW: экран выбора рамы — показываем только реально доступные для дрона рамы
+    await state.set_state(SelectionState.step_frame)
+    frames = _sel_drone_frames(drone)
+    try:
+        await callback.message.edit_text(
+            "🧠 Экспресс-подбор АКБ — «Не знаю»\n\n"
+            f"Дрон: {FILTER_LABELS['drone'][drone]}\n"
+            "Под этот дрон подходят рамы:\n"
+            + "".join(f"• {FILTER_LABELS['voltage'][f]}\n" for f in frames)
+            + "\nВыберите раму:",
+            reply_markup=_sel_step_frame_kb(drone),
+        )
+    except Exception as e:
+        system_logger.warning(f"Selection step_frame edit failed: {e}")
+
+
+async def _sel_show_unk_results(callback: types.CallbackQuery, state: FSMContext, drone: str, frame: str) -> None:
+    # NEW: список подходящих АКБ для комбинации дрон + рама (ветка «Не знаю»)
+    models = _apply_filters(drone=drone, voltage=frame)
+    frames = _sel_drone_frames(drone)
+    buttons = [
+        [InlineKeyboardButton(
+            text=f"{code} | {m['mah']}мАч | {m['kg']}кг",
+            callback_data=f"model:{code}",
+        )]
+        for code, m in models.items()
+    ]
+    if len(frames) > 1:
+        # Кнопка возврата к выбору рамы — только если шаг выбора рамы был (дронов с 2+ рамами)
+        buttons.append([InlineKeyboardButton(text="⬅️ Вернуться к выбору рамы", callback_data="sel:frback")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Выбрать другой дрон", callback_data="sel:drback")])
+    buttons.append([InlineKeyboardButton(text="⬅️ Начать заново", callback_data="sel:restart")])
+
+    text = (
+        "🧠 Экспресс-подбор АКБ — кандидаты\n\n"
+        f"Дрон: {FILTER_LABELS['drone'][drone]}\n"
+        f"Рама: {FILTER_LABELS['voltage'][frame]}\n\n"
+        f"Подходящих моделей: {len(models)}\n\n"
+        "Выберите модель:"
+    )
+    if len(models) == 1 and len(frames) > 1:
+        # Пояснение для случая «одна модель на раму» (сейчас это 10" на 8S)
+        only = next(iter(models))
+        text += (
+            f"\n\nПод эту раму подходит одна модель — {only}. "
+            "Если она не подходит, вернитесь к выбору рамы."
+        )
+
+    # Сохраняем контекст, чтобы работали «Выбрать другой дрон» и «Вернуться к выбору рамы»
+    await state.update_data(drone=drone, frame=frame)
+    await state.set_state(SelectionState.step_frame)
+    try:
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    except Exception as e:
+        system_logger.warning(f"Selection unk results edit failed: {e}")
 
 
 async def _sel_show_results(callback: types.CallbackQuery, state: FSMContext, voltage: str, choice: str) -> None:
@@ -880,17 +1104,8 @@ async def callback_selection(callback: types.CallbackQuery, state: FSMContext):
     elif action == "a" and current == SelectionState.step_a:
         _sel_log(callback, "step_a", arg)
         if arg == "unknown":
-            # «Не знаю» — без подтверждения напряжения подбор невозможен
-            await state.clear()
-            try:
-                await callback.message.edit_text(
-                    "❓ Напряжение не подтверждено.\n\n"
-                    "Пришлите фото регуляторов или напишите марку дрона. "
-                    "Без подтверждения напряжения подбор невозможен.",
-                    reply_markup=_sel_kb([[("⬅️ Начать заново", "sel:restart")]]),
-                )
-            except Exception as e:
-                system_logger.warning(f"Selection unknown edit failed: {e}")
+            # «Не знаю» — подбор по дрону: дрон → рама → список подходящих АКБ
+            await _sel_show_step_drone(callback, state)
         elif arg in ("6S", "8S"):
             await state.update_data(voltage=arg)
             await state.set_state(SelectionState.step_b)
@@ -921,6 +1136,71 @@ async def callback_selection(callback: types.CallbackQuery, state: FSMContext):
             voltage = data.get("voltage", "6S")
             await state.set_state(SelectionState.step_c)
             await _sel_show_step_c(callback, voltage)
+
+    elif action == "dr" and current == SelectionState.step_drone:
+        # Ветка «Не знаю»: выбран дрон — показываем рамы или сразу АКБ, если рама одна
+        drone = arg
+        _sel_log(callback, "step_drone", drone)
+        frames = _sel_drone_frames(drone)
+        if not frames:
+            # Под дрон нет моделей — понятное сообщение вместо пустого списка
+            await state.clear()
+            try:
+                await callback.message.edit_text(
+                    "🧠 Экспресс-подбор АКБ\n\n"
+                    f"Для дрона {FILTER_LABELS['drone'][drone]} не нашлось моделей в каталоге. "
+                    "Выберите другой дрон или начните заново.",
+                    reply_markup=_sel_unk_none_kb(),
+                )
+            except Exception as e:
+                system_logger.warning(f"Selection drone-empty edit failed: {e}")
+        elif len(frames) == 1:
+            # Ровно одна рама — шаг выбора рамы пропускаем, сразу показываем подходящие АКБ
+            await _sel_show_unk_results(callback, state, drone, frames[0])
+        else:
+            # Рам несколько — показываем шаг выбора рамы
+            await _sel_show_step_frame(callback, state, drone)
+
+    elif action == "fr" and current == SelectionState.step_frame:
+        # Ветка «Не знаю»: выбрана рама — показываем подходящие АКБ
+        frame = arg
+        data = await state.get_data()
+        drone = data.get("drone")
+        if not drone:
+            # Контекст потерян — начинаем с выбора дрона
+            await _sel_show_step_drone(callback, state)
+        else:
+            _sel_log(callback, "step_frame", f"{drone}:{frame}")
+            if not _apply_filters(drone=drone, voltage=frame):
+                # Комбинация дрон + рама пуста — понятное сообщение вместо пустого списка
+                await state.clear()
+                try:
+                    await callback.message.edit_text(
+                        "🧠 Экспресс-подбор АКБ\n\n"
+                        f"Для дрона {FILTER_LABELS['drone'][drone]} на раме "
+                        f"{FILTER_LABELS['voltage'][frame]} не нашлось подходящих моделей. "
+                        "Выберите другой дрон или начните заново.",
+                        reply_markup=_sel_unk_none_kb(),
+                    )
+                except Exception as e:
+                    system_logger.warning(f"Selection frame-empty edit failed: {e}")
+            else:
+                await _sel_show_unk_results(callback, state, drone, frame)
+
+    elif action == "drback":
+        # «⬅️ Выбрать другой дрон» — с экрана выбора рамы и с экрана результатов
+        _sel_log(callback, "drback", "drback")
+        await _sel_show_step_drone(callback, state)
+
+    elif action == "frback" and current == SelectionState.step_frame:
+        # «⬅️ Вернуться к выбору рамы» — только для дронов, где рам несколько
+        data = await state.get_data()
+        drone = data.get("drone")
+        if not drone:
+            await _sel_show_step_drone(callback, state)
+        else:
+            _sel_log(callback, "frback", drone)
+            await _sel_show_step_frame(callback, state, drone)
 
     elif action == "c" and current == SelectionState.step_c and arg == SELECTION_6S_CONFLICT:
         # Конфликт 6S: катушка 20 км + груз от 1 кг — задача не решается, нужен 13" 8S
