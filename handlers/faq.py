@@ -64,6 +64,10 @@ def _load_faq() -> list[dict]:
         system_logger.warning(f"faq.json read failed: {e}")
         return []
 
+    if not isinstance(raw, dict):
+        system_logger.warning("faq.json: корень не объект — пропущен")
+        return []
+
     categories = []
     for cat in raw.get("categories", []):
         if not isinstance(cat, dict) or not cat.get("name"):
@@ -89,7 +93,7 @@ def _find(query: str, categories: list[dict]) -> list[tuple[int, int, dict]]:
     в вопрос, +1 — в ответ. Результат — по убыванию релевантности,
     не более SEARCH_LIMIT записей.
     """
-    words = re.findall(r"[а-яёa-z0-9]{3,}", query.lower())
+    words = re.findall(r"[а-яёa-z0-9]{3,}", (query or "").lower())
     if not words:
         return []
     matches = []
@@ -101,6 +105,7 @@ def _find(query: str, categories: list[dict]) -> list[tuple[int, int, dict]]:
                 matches.append((score, ci, qi, item))
     matches.sort(key=lambda m: -m[0])
     return [(ci, qi, item) for _, ci, qi, item in matches[:SEARCH_LIMIT]]
+
 
 # ============================================================
 # РЕНДЕР ЭКРАНОВ
@@ -218,6 +223,15 @@ def _is_exit(text: str) -> bool:
     return t in MENU_BUTTONS or t.lower() in EXIT_WORDS
 
 
+def _parse_index(raw: str, part: int) -> int | None:
+    """Достаёт неотрицательный индекс из callback.data по позиции part."""
+    try:
+        value = int(raw.split(":")[part])
+    except (IndexError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
 # ============================================================
 # ХЕНДЛЕРЫ
 # ============================================================
@@ -248,9 +262,8 @@ async def callback_menu(callback: types.CallbackQuery, state: FSMContext) -> Non
 @router.callback_query(F.data.startswith("faq:c:"))
 async def callback_category(callback: types.CallbackQuery) -> None:
     """faq:c:<i> — список вопросов категории."""
-    try:
-        ci = int(callback.data.split(":")[2])
-    except (IndexError, ValueError):
+    ci = _parse_index(callback.data, 2)
+    if ci is None:
         await callback.answer("Категория не найдена", show_alert=True)
         return
     categories = _load_faq()
@@ -266,18 +279,17 @@ async def callback_category(callback: types.CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("faq:q:"))
 async def callback_question(callback: types.CallbackQuery) -> None:
     """faq:q:<i>:<j> — ответ на вопрос."""
-    try:
-        ci, qi = int(callback.data.split(":")[2]), int(callback.data.split(":")[3])
-    except (IndexError, ValueError):
+    ci = _parse_index(callback.data, 2)
+    qi = _parse_index(callback.data, 3)
+    if ci is None or qi is None:
         await callback.answer("Вопрос не найден", show_alert=True)
         return
     categories = _load_faq()
-    try:
-        cat = categories[ci]
-        item = cat["questions"][qi]
-    except IndexError:
+    if ci >= len(categories) or qi >= len(categories[ci]["questions"]):
         await callback.answer("Вопрос не найден", show_alert=True)
         return
+    cat = categories[ci]
+    item = cat["questions"][qi]
     _log(callback.from_user.id, "faq_answer", {"q": item["q"]})
     await _edit(callback, _render_answer(cat, item), _answer_kb(ci))
     await callback.answer()
@@ -309,6 +321,9 @@ async def process_search_text(message: types.Message, state: FSMContext) -> None
         await state.clear()
         await message.answer("❌ FAQ закрыт. Выберите раздел в меню.")
         return
+    if not raw:
+        await message.answer("🔎 Пустой запрос. Введите ключевое слово текстом.")
+        return
     categories = _load_faq()
     matches = _find(raw, categories)
     _log(message.from_user.id, "faq_search", {"query": raw, "found": len(matches)})
@@ -321,8 +336,9 @@ async def process_search_text(message: types.Message, state: FSMContext) -> None
 
 
 @router.message(FaqState.waiting_for_query)
-async def search_not_text(message: types.Message) -> None:
+async def search_not_text(message: types.Message, state: FSMContext) -> None:
     """Во время поиска прислали не текст (фото и т.п.) — мягкая подсказка."""
+    _log(message.from_user.id, "faq_search_non_text", {})
     await message.answer("🔎 Жду ключевое слово текстом — одним сообщением.")
 
 
@@ -336,5 +352,3 @@ async def callback_cancel(callback: types.CallbackQuery, state: FSMContext) -> N
     except Exception as e:
         system_logger.warning(f"faq cancel edit failed: {e}")
     await callback.answer()
-
-

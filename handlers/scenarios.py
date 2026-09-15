@@ -12,6 +12,7 @@
 Контент сценариев — data/scenarios.py; общие ресурсы (бот, логгеры) — config.
 """
 
+import html
 import json
 from datetime import datetime
 
@@ -24,40 +25,68 @@ from utils import answer_long
 
 router = Router(name="scenarios")
 
+# Telegram: лимит edit_text — 4096 символов. Оставляем запас.
+EDIT_SAFE_LIMIT = 4000
+SEPARATOR = "\n\n" + "—" * 30 + "\n\n"
 
-# ---------- тексты ----------
+
+# ============================================================
+# УТИЛИТЫ
+# ============================================================
+def _esc(value) -> str:
+    """HTML-экранирование пользовательских данных (но не наших <b>-тегов)."""
+    return html.escape(str(value), quote=False)
+
 
 def _spec_line(code: str) -> str:
+    """Строка ТТХ модели. Только цифры/буквы/· — экранирование не нужно."""
     m = MODELS[code]
     return (f"{m['voltage']} · {m['mah']} мА·ч · {m['kg']} кг · "
             f"{m['cont']}/{m['peak']} А · {m['connector']}")
 
 
-def _scenario_text(sid: str, html: bool = True) -> str:
+# ============================================================
+# ТЕКСТЫ
+# ============================================================
+def _scenario_text(sid: str, with_html: bool = True) -> str:
     """Экран одного сценария.
 
-    html=False — plain-текст для полной сводки: answer_long шлёт части без
-    parse_mode, и HTML-теги могли бы разрезаться на границе частей.
+    with_html=False — plain-текст для полной сводки: answer_long шлёт части
+    без parse_mode, и HTML-теги могли бы разрезаться на границе частей.
+    В plain-режиме данные НЕ экранируются (иначе < превратится в &lt;).
+    В HTML-режиме все данные экранируются, чтобы <, >, & не ломали разметку.
     """
     sc = SCENARIOS[sid]
-    b = (lambda s: f"<b>{s}</b>") if html else (lambda s: s)
+    e = _esc if with_html else (lambda s: str(s))
+    b = (lambda s: f"<b>{s}</b>") if with_html else (lambda s: s)
+
     lines = [
-        f"{sc['emoji']} {b(sc['title'])} — шпаргалка менеджера",
+        f"{sc.get('emoji', '')} {b(e(sc.get('title', sid)))} — шпаргалка менеджера",
         "",
         b("👤 Портрет клиента:"),
-        sc["client"],
+        e(sc.get("client", "")),
         "",
         b("🔋 Рекомендуем:"),
     ]
-    lines += [f"  • {b(code)} — {_spec_line(code)}" for code in sc["recommend"]]
+    for code in sc.get("recommend", []):
+        lines.append(f"  • {b(e(code))} — {_spec_line(code)}")
+
     lines += ["", b("✅ Ключевые преимущества для этого клиента:")]
-    lines += [f"  • {w}" for w in sc["why"]]
-    lines += ["", b("💬 Типовые вопросы и ответы:")]
-    for q, a in sc["qa"]:
-        lines += [f"  ❓ {q}", f"  ➡️ {a}"]
-    if sc["extras"]:
+    for w in sc.get("why", []):
+        lines.append(f"  • {e(w)}")
+
+    qa = sc.get("qa", [])
+    if qa:
+        lines += ["", b("💬 Типовые вопросы и ответы:")]
+        for q, a in qa:
+            lines += [f"  ❓ {e(q)}", f"  ➡️ {e(a)}"]
+
+    extras = sc.get("extras", [])
+    if extras:
         lines += ["", b("🛒 Сопутствующие товары:")]
-        lines += [f"  • {b(name)} — {why}" for name, why in sc["extras"]]
+        for name, why in extras:
+            lines.append(f"  • {b(e(name))} — {e(why)}")
+
     return "\n".join(lines)
 
 
@@ -69,16 +98,26 @@ LIST_TEXT = (
 )
 
 
-# ---------- клавиатуры ----------
+# ============================================================
+# КЛАВИАТУРЫ
+# ============================================================
+def _ordered_ids() -> list[str]:
+    """SCENARIO_ORDER, отфильтрованный по фактическому наличию в SCENARIOS."""
+    ids = [sid for sid in SCENARIO_ORDER if sid in SCENARIOS]
+    missing = [sid for sid in SCENARIO_ORDER if sid not in SCENARIOS]
+    if missing:
+        system_logger.warning(f"SCENARIO_ORDER: нет в SCENARIOS — {missing}")
+    return ids
+
 
 def _list_kb() -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton(
-            text=f"{SCENARIOS[sid]['emoji']} {SCENARIOS[sid]['title']}",
+    rows = []
+    for sid in _ordered_ids():
+        sc = SCENARIOS[sid]
+        rows.append([InlineKeyboardButton(
+            text=f"{sc.get('emoji', '')} {sc.get('title', sid)}",
             callback_data=f"scn:{sid}",
-        )]
-        for sid in SCENARIO_ORDER
-    ]
+        )])
     rows.append([InlineKeyboardButton(text="📄 Всё одним сообщением", callback_data="scn:full")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -86,69 +125,104 @@ def _list_kb() -> InlineKeyboardMarkup:
 def _scenario_kb(sid: str) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text=f"📦 Карточка {code}", callback_data=f"model:{code}")]
-        for code in SCENARIOS[sid]["recommend"]
+        for code in SCENARIOS[sid].get("recommend", [])
     ]
     rows.append([InlineKeyboardButton(text="⬅️ К списку сценариев", callback_data="scn:list")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-# ---------- логирование ----------
+# ============================================================
+# ЛОГИРОВАНИЕ
+# ============================================================
+def _log(user_id: int, event: str, scenario: str) -> None:
+    dialog_logger.info(json.dumps({
+        "event": event,
+        "user_id": user_id,
+        "scenario": scenario,
+        "timestamp": datetime.now().isoformat(),
+    }, ensure_ascii=False))
+
 
 def _log_cb(callback: types.CallbackQuery, event: str, scenario: str) -> None:
-    dialog_logger.info(json.dumps({
-        'event': event,
-        'user_id': callback.from_user.id,
-        'scenario': scenario,
-        'timestamp': datetime.now().isoformat()
-    }, ensure_ascii=False))
+    _log(callback.from_user.id, event, scenario)
 
 
-# ---------- обработчики ----------
+# ============================================================
+# ХЕЛПЕРЫ
+# ============================================================
+async def _show_list(message: types.Message, *, edit: bool = False) -> None:
+    """Показать список сценариев: новым сообщением или редактированием."""
+    if edit:
+        try:
+            await message.edit_text(LIST_TEXT, reply_markup=_list_kb(), parse_mode="HTML")
+        except Exception as e:
+            system_logger.warning(f"Scenarios list edit failed: {e}")
+    else:
+        await message.answer(LIST_TEXT, reply_markup=_list_kb(), parse_mode="HTML")
 
+
+async def _safe_answer_long(message: types.Message, text: str) -> None:
+    """answer_long без падения потока: ошибку — в system-log."""
+    try:
+        await answer_long(message, text)
+    except Exception as e:
+        system_logger.warning(f"answer_long failed: {e}")
+
+
+async def _scenario_full(callback: types.CallbackQuery) -> None:
+    """scn:full — все сценарии одним сообщением (plain-text, без parse_mode)."""
+    _log_cb(callback, "scenario_full", "all")
+    text = SEPARATOR.join(
+        _scenario_text(sid, with_html=False) for sid in _ordered_ids()
+    )
+    await _safe_answer_long(callback.message, text)
+
+
+# ============================================================
+# ОБРАБОТЧИКИ
+# ============================================================
 @router.message(F.text == "🎯 Сценарии")
 async def button_scenarios(message: types.Message):
-    dialog_logger.info(json.dumps({
-        'event': 'scenarios_open',
-        'user_id': message.from_user.id,
-        'timestamp': datetime.now().isoformat()
-    }, ensure_ascii=False))
-    await message.answer(LIST_TEXT, reply_markup=_list_kb(), parse_mode="HTML")
+    """«🎯 Сценарии» — список сценариев."""
+    _log(message.from_user.id, "scenarios_open", "list")
+    await _show_list(message, edit=False)
 
 
 @router.callback_query(F.data == "scn:list")
 async def callback_scenario_list(callback: types.CallbackQuery):
-    _log_cb(callback, 'scenario_list', 'list')
-    try:
-        await callback.message.edit_text(LIST_TEXT, reply_markup=_list_kb(), parse_mode="HTML")
-    except Exception as e:
-        system_logger.warning(f"Scenarios list edit failed: {e}")
+    """scn:list — возврат к списку сценариев."""
+    _log_cb(callback, "scenario_list", "list")
+    await _show_list(callback.message, edit=True)
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("scn:"))
 async def callback_scenario(callback: types.CallbackQuery):
+    """scn:<id> — экран сценария. scn:list и scn:full обрабатываются явно,
+    даже если порядок регистрации хендлеров изменится."""
     sid = callback.data.split(":", 1)[1]
-    if sid != "full" and sid not in SCENARIOS:
+
+    if sid == "list":
+        await callback_scenario_list(callback)
+        return
+    if sid == "full":
+        await _scenario_full(callback)
+        await callback.answer()
+        return
+    if sid not in SCENARIOS:
         await callback.answer("Сценарий не найден", show_alert=True)
         return
 
-    if sid == "full":
-        _log_cb(callback, 'scenario_full', 'all')
-        sep = "\n\n" + "—" * 30 + "\n\n"
-        await answer_long(callback.message, sep.join(_scenario_text(s, html=False) for s in SCENARIO_ORDER))
-        await callback.answer()
-        return
-
-    _log_cb(callback, 'scenario_view', sid)
+    _log_cb(callback, "scenario_view", sid)
     text = _scenario_text(sid)
-    if len(text) <= 4000:  # лимит edit_text 4096, у одного сценария запас
+    if len(text) <= EDIT_SAFE_LIMIT:
         try:
             await callback.message.edit_text(
                 text, reply_markup=_scenario_kb(sid), parse_mode="HTML"
             )
         except Exception as e:
             system_logger.warning(f"Scenario view edit failed: {e}")
-            await answer_long(callback.message, text)
+            await _safe_answer_long(callback.message, text)
     else:
-        await answer_long(callback.message, text)
+        await _safe_answer_long(callback.message, text)
     await callback.answer()
