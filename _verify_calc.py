@@ -74,13 +74,23 @@ async def main():
     assert "💰 Калькулятор" in MAIN_BUTTONS and "📊 История расчётов" in MAIN_BUTTONS
     kb_texts = [b.text for row in main_kb.keyboard for b in row]
     assert "💰 Калькулятор" in kb_texts and "📊 История расчётов" in kb_texts
+    assert "🎯 Сценарии" in calc.MENU_BUTTONS, "новая кнопка меню должна вести к выходу из FSM калькулятора"
     ok.append("router+menu")
 
-    # prices.json покрывает все модели каталога
+    # prices.json: вложенный прайс {модель: {cost, cash, wholesale, vat5, vat22, profit}},
+    # покрывает все модели каталога, profit согласован с cash - cost
     prices = calc._load_prices()
     assert prices, "prices.json пуст"
     missing = set(MODELS) - set(prices)
     assert not missing, f"нет цен для: {missing}"
+    assert all(isinstance(v, dict) and v.get("cost", 0) > 0 for v in prices.values()), \
+        "ожидается {модель: {cost, ...}} с закупкой > 0"
+    for code, v in prices.items():
+        if "cash" in v and "profit" in v:
+            assert abs(v["profit"] - (v["cash"] - v["cost"])) < 1.0, f"{code}: profit != cash - cost"
+    extra = set(prices) - set(MODELS)
+    if extra:
+        print("note: модели прайса вне каталога MODELS:", ", ".join(sorted(extra)))
     ok.append("prices.json")
 
     storage = MemoryStorage()
@@ -95,11 +105,15 @@ async def main():
     assert any(t.startswith("6S2P") for t in labels) and any("Отмена" in t for t in labels)
     ok.append("start")
 
-    # 2) выбор модели
-    await calc.callback_choose_model(FakeCb("calc:model:6S4P"), state)
+    # 2) выбор модели: экран шага 2 показывает полный прайс модели
+    cb = FakeCb("calc:model:6S4P")
+    await calc.callback_choose_model(cb, state)
     assert (await state.get_state()) == calc.MarginState.waiting_for_cost
     assert (await state.get_data())["model"] == "6S4P"
-    ok.append("model")
+    step2 = cb.message.edits[-1][0]
+    assert "Прайс:" in step2 and "розница 15 500 ₽" in step2 and "НДС 5% 17 500 ₽" in step2, step2
+    assert "Плановая маржа по прайсу: 9 200 ₽" in step2, step2
+    ok.append("model+ladder")
 
     # 3) закупочная цена текстом (с пробелом-разделителем)
     await calc.process_cost_input(FakeMsg("30 000"), state)
@@ -115,22 +129,28 @@ async def main():
     assert "5 000 ₽" in text, text
     assert "14.3 %" in text, text
     assert "1 500 ₽" in text, text  # предел скидки = 30% от маржи 5 000
+    assert "Сверка с прайсом" in text, text          # NEW: блок сверки с прайсом
+    assert "ниже плана на 4 200 ₽" in text, text     # план по прайсу 9 200, факт 5 000
+    assert "выше максимальной ступени" in text, text  # 35 000 > НДС 22% (21 265)
     hist = calc.get_history(4242)
     assert hist and hist[0]["model"] == "6S4P" and hist[0]["margin"] == 5000.0
     ok.append("result+history")
 
-    # 5) базовая цена из config одной кнопкой
+    # 5) базовая цена (поле cost прайса) из config одной кнопкой
     await calc.start_calculator(FakeMsg("💰 Калькулятор"), state)
     await calc.callback_choose_model(FakeCb("calc:model:6S2P"), state)
-    await calc.callback_cost_base(FakeCb("calc:cost:base"), state)
-    assert (await state.get_data())["cost"] == float(prices["6S2P"])
+    cb = FakeCb("calc:cost:base")
+    await calc.callback_cost_base(cb, state)
+    assert (await state.get_data())["cost"] == prices["6S2P"]["cost"] == 4800.0
     assert (await state.get_state()) == calc.MarginState.waiting_for_price
+    assert "Прайс:" in cb.message.edits[-1][0] and "розница 7 900 ₽" in cb.message.edits[-1][0], cb.message.edits[-1][0]
     ok.append("base-price")
 
-    # 6) продажа ниже закупки — предупреждение об убытке
-    m = FakeMsg("10 000")
+    # 6) продажа ниже закупки (закупка 4 800) — предупреждение об убытке
+    m = FakeMsg("4 000")
     await calc.process_price_input(m, state)
     assert "убыток" in m.answers[-1][0].lower(), m.answers[-1][0]
+    assert "ниже минимальной ступени" in m.answers[-1][0], m.answers[-1][0]  # 4 000 < розницы 7 900
     ok.append("loss-advice")
 
     # 7) выход словом «отмена» и командой /cancel
@@ -163,6 +183,13 @@ async def main():
                           ("28к", 28000.0), ("15 000 руб.", 15000.0), ("abc", None), ("-5", None)]:
         assert calc._parse_money(raw) == expected, raw
     ok.append("money-parser")
+
+    # 11) чистые функции: сверка без прайса — пусто, рендер не падает
+    assert calc._price_review(100.0, 50.0, None) == ""
+    entry = {"model": "X", "cost": 100.0, "price": 150.0, "margin": 50.0, "margin_pct": 33.3}
+    plain = calc._render_result(entry)
+    assert "Сверка" not in plain and "33.3 %" in plain, plain
+    ok.append("pure-functions")
 
     print("OK:", ", ".join(ok))
     if calc.HISTORY_PATH.exists():

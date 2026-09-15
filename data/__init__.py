@@ -1,4 +1,4 @@
-"""Каталог моделей АКБ и справочники для фильтров (вынесено из bot.py)."""
+"""Каталог моделей АКБ, справочники фильтров и сценарии продаж (вынесено из bot.py)."""
 from .models import (
     CAP_CLASSES,
     FILTER_LABELS,
@@ -11,6 +11,7 @@ from .models import (
     SEL_STEP_A_TEXT,
     VOLTAGES,
 )
+from .scenarios import SCENARIO_ORDER, SCENARIOS
 
 __all__ = [
     "MODELS",
@@ -18,6 +19,8 @@ __all__ = [
     "VOLTAGES",
     "CAP_CLASSES",
     "FILTER_LABELS",
+    "SCENARIOS",
+    "SCENARIO_ORDER",
     "SELECTION_STEP_C",
     "SELECTION_6S_CONFLICT",
     "SELECTION_6S_CONFLICT_LABEL",

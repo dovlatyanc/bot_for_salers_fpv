@@ -10,6 +10,8 @@
   handlers/menu.py       — /start, /help, /ai, ТТХ (row:/model:), /checklist,
                            стоп-лист, памятка, обратная связь (FSM FeedbackState),
                            оценка ответа AI (fb_good/fb_bad), dummy;
+  handlers/scenarios.py  — «🎯 Сценарии» — готовые шпаргалки продаж (callback "scn:");
+                           карточки моделей из сценариев открывает handlers/menu.py;
   handlers/selection.py  — экспресс-подбор «🧠 Подбор» (FSM SelectionState, "sel:");
   handlers/search.py     — мульти-фильтр «🔎 Поиск» (callback "srch:", "srchm:");
   handlers/build.py      — «🔧 Своя сборка» (FSM BuildState, "build_conn:");

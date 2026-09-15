@@ -4,9 +4,11 @@
 
 Сценарий (FSM MarginState):
   1) менеджер выбирает модель АКБ из списка (список — ключи config/prices.json);
-  2) вводит закупочную цену — или берёт базовую из config/prices.json одной кнопкой;
+  2) бот показывает полный прайс модели (закупка, розница, опт, НДС 5/22%) и
+     предлагает закупочную цену из конфига одной кнопкой — либо свою;
   3) вводит цену продажи клиенту;
-  4) бот показывает маржу в рублях, маржу в % и рекомендацию по скидке.
+  4) бот показывает маржу в рублях, маржу в %, рекомендацию по скидке и сверку
+     с прайсом (факт vs плановая маржа; между какими ступенями прайса цена).
 
 Каждый завершённый расчёт сохраняется в config/calc_history.json —
 кнопка «📊 История расчётов» показывает последние 5 расчётов этого менеджера.
@@ -48,11 +50,11 @@ HISTORY_PATH = BASE_DIR / "config" / "calc_history.json"
 HISTORY_LIMIT = 5      # «последние 5 расчётов этого менеджера»
 DISCOUNT_SHARE = 0.30  # рекомендованный предел скидки — 30% от маржи
 
-# Кнопки главного меню (зеркало MAIN_BUTTONS из bot.py) — по ним можно выйти
-# из FSM-сценария калькулятора, не оставляя «зависшее» состояние
+# Кнопки главного меню (зеркало MAIN_BUTTONS из bot.py без кнопок самого
+# калькулятора) — по ним можно выйти из FSM-сценария, не оставляя «зависшее» состояние
 MENU_BUTTONS = frozenset({
     "📊 ТТХ", "🧠 Подбор", "🔎 Поиск", "🤖 AI-ассистент", "🛑 Стоп-лист",
-    "📦 Памятка", "🔧 Своя сборка", "📝 Обратная связь",
+    "📦 Памятка", "🔧 Своя сборка", "📝 Обратная связь", "🎯 Сценарии",
 })
 # слова-выходы, принимаемые в шагах ввода цен (кроме /cancel — он ловится командой)
 EXIT_WORDS = frozenset({"отмена", "cancel", "❌", "❌ отмена"})
@@ -74,8 +76,11 @@ class MarginState(StatesGroup):
 # ЧИСТАЯ ЛОГИКА: ЦЕНЫ, ПАРСИНГ, ФОРМАТИРОВАНИЕ
 # ============================================================
 def _load_prices() -> dict:
-    """Базовые закупочные цены из config/prices.json ({модель: цена}).
+    """Прайс-лист из config/prices.json: {модель: {cost, cash, wholesale, vat5, vat22, profit}}.
 
+    Обязательное поле — cost (закупочная цена > 0); остальные ступени необязательны.
+    Поддерживается и старый плоский формат {модель: закупка} — он превращается
+    в {модель: {"cost": закупка}}. Битые записи пропускаются (причина — в system-лог).
     Пустой dict — файл отсутствует/битый (причина пишется в system-лог).
     """
     try:
@@ -88,17 +93,30 @@ def _load_prices() -> dict:
         system_logger.warning(f"prices.json read failed: {e}")
         return {}
     if not isinstance(data, dict):
-        system_logger.warning("prices.json: ожидается JSON-объект {модель: цена}")
+        system_logger.warning("prices.json: ожидается JSON-объект {модель: {cost, cash, ...}}")
         return {}
     clean: dict = {}
     for code, value in data.items():
-        try:
-            price = float(value)
-        except (TypeError, ValueError):
-            system_logger.warning(f"prices.json: некорректная цена для {code}: {value!r}")
+        if isinstance(value, (int, float)):        # старый формат: число = закупка
+            value = {"cost": value}
+        if not isinstance(value, dict):
+            system_logger.warning(f"prices.json: некорректная запись для {code}: {value!r}")
             continue
-        if price > 0:
-            clean[str(code)] = price
+        entry: dict = {}
+        for key in ("cost", "cash", "wholesale", "vat5", "vat22", "profit"):
+            if key not in value:
+                continue
+            try:
+                price = float(value[key])
+            except (TypeError, ValueError):
+                system_logger.warning(f"prices.json: некорректная цена {key} для {code}: {value[key]!r}")
+                continue
+            if price > 0:
+                entry[key] = price
+        if entry.get("cost", 0) <= 0:
+            system_logger.warning(f"prices.json: нет закупочной цены для {code} — запись пропущена")
+            continue
+        clean[str(code)] = entry
     return clean
 
 
@@ -146,6 +164,64 @@ def _fmt_money(value: float) -> str:
 
 def _fmt_pct(value: float) -> str:
     return f"{value:.1f} %"
+
+
+# Ступени прайса в порядке показа: ключ в prices.json → подпись
+PRICE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("cost", "закупка"),
+    ("cash", "розница"),
+    ("wholesale", "опт"),
+    ("vat5", "НДС 5%"),
+    ("vat22", "НДС 22%"),
+)
+
+
+def _price_ladder(info: dict) -> str:
+    """Строка «закупка … · розница … · опт … · НДС 5% … · НДС 22% …» (только заполненные)."""
+    parts = [f"{title} {_fmt_money(info[key])}" for key, title in PRICE_FIELDS if info.get(key)]
+    return " · ".join(parts)
+
+
+def _price_review(price: float, margin: float, info: dict | None) -> str:
+    """Блок «Сверка с прайсом» для экрана результата.
+
+    Показывает плановую маржу из прайса (поле profit) и положение цены продажи
+    между ступенями прайса. Пустая строка — прайса для модели нет.
+    """
+    if not info:
+        return ""
+    lines: list[str] = ["", "🏷 <b>Сверка с прайсом:</b>"]
+    plan = info.get("profit")
+    if plan:
+        delta = margin - float(plan)
+        if abs(delta) < 0.5:
+            verdict = "на уровне плана"
+        elif delta > 0:
+            verdict = f"выше плана на {_fmt_money(delta)}"
+        else:
+            verdict = f"ниже плана на {_fmt_money(abs(delta))}"
+        lines.append(f"💰 План по прайсу: маржа {_fmt_money(float(plan))}. "
+                     f"Факт: {_fmt_money(margin)} ({verdict}).")
+    tiers = sorted(
+        ((title, float(info[key])) for key, title in PRICE_FIELDS if key != "cost" and info.get(key)),
+        key=lambda t: t[1],
+    )
+    if tiers:
+        position = ""
+        for i, (title, value) in enumerate(tiers):
+            if price == value:
+                position = f"ровно ступень «{title}» ({_fmt_money(value)})"
+                break
+            if price < value:
+                position = (
+                    f"ниже минимальной ступени «{title}» ({_fmt_money(value)})" if i == 0 else
+                    f"между «{tiers[i - 1][0]}» ({_fmt_money(tiers[i - 1][1])}) и «{title}» ({_fmt_money(value)})"
+                )
+                break
+        if not position:
+            position = f"выше максимальной ступени «{tiers[-1][0]}» ({_fmt_money(tiers[-1][1])})"
+        lines.append(f"📍 Ваша цена {_fmt_money(price)} — {position}.")
+    return "\n".join(lines)
 
 
 # ============================================================
@@ -219,10 +295,10 @@ def _cancel_row() -> list[types.InlineKeyboardButton]:
 
 
 def _models_kb(prices: dict) -> types.InlineKeyboardMarkup:
-    # NEW: список моделей = ключи config/prices.json, у каждой — базовая цена
+    # NEW: список моделей = ключи config/prices.json, у каждой — закупка из прайса
     rows: list[list[types.InlineKeyboardButton]] = []
     for code in sorted(prices, key=_model_sort_key):
-        label = f"{code} — база {_fmt_money(prices[code])}"
+        label = f"{code} — закупка {_fmt_money(prices[code]['cost'])}"
         rows.append([types.InlineKeyboardButton(text=label, callback_data=f"calc:model:{code}")])
     rows.append(_cancel_row())
     return types.InlineKeyboardMarkup(inline_keyboard=rows)
@@ -291,8 +367,9 @@ def _discount_advice(cost: float, price: float, margin: float, margin_pct: float
     return "🔴 Маржи почти нет — продавайте без скидки."
 
 
-def _render_result(entry: dict) -> str:
+def _render_result(entry: dict, price_info: dict | None = None) -> str:
     advice = _discount_advice(entry["cost"], entry["price"], entry["margin"], entry["margin_pct"])
+    review = _price_review(float(entry["price"]), float(entry["margin"]), price_info)
     return (
         "🧮 <b>Расчёт готов</b>\n\n"
         f"📦 Модель: <b>{html.escape(str(entry['model']))}</b>\n"
@@ -302,6 +379,7 @@ def _render_result(entry: dict) -> str:
         f"📈 <b>Маржинальность: {_fmt_pct(entry['margin_pct'])}</b> (от цены продажи)\n\n"
         "💡 <b>Рекомендация по скидке:</b>\n"
         f"{advice}"
+        f"{review}"
     )
 
 
@@ -381,17 +459,23 @@ async def _exit_flow(message: types.Message, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("calc:model:"), MarginState.choosing_model)
 async def callback_choose_model(callback: types.CallbackQuery, state: FSMContext):
     code = callback.data.split(":", 2)[2]  # код может содержать пробелы: «8S2P XT-60»
-    prices = _load_prices()
-    base = prices.get(code)
+    info = _load_prices().get(code) or {}
+    base = info.get("cost")
     await state.update_data(model=code)
     await state.set_state(MarginState.waiting_for_cost)
     _log(callback.from_user.id, "calc_model_selected", {"model": code})
+    head = f"📦 Модель: <b>{html.escape(code)}</b>"
+    if info:
+        # NEW: полный прайс модели из config — закупка, розница, опт, НДС, плановая маржа
+        head += f"\n\n🏷 Прайс: {_price_ladder(info)}"
+        if info.get("profit"):
+            head += f"\n💰 Плановая маржа по прайсу: {_fmt_money(info['profit'])}"
     if base is not None:
-        text = (f"📦 Модель: <b>{html.escape(code)}</b>\n\n"
+        text = (f"{head}\n\n"
                 f"Шаг 2/3 — закупочная цена. Базовая из конфига: <b>{_fmt_money(base)}</b>.\n"
                 "Введите свою цену или нажмите кнопку ниже.")
     else:
-        text = (f"📦 Модель: <b>{html.escape(code)}</b>\n\n"
+        text = (f"{head}\n\n"
                 "Шаг 2/3 — закупочная цена. Введите число, например <b>28000</b>.")
     await _edit(callback, text, _cost_kb(base))
     await callback.answer()
@@ -405,19 +489,23 @@ async def callback_choose_model_stale(callback: types.CallbackQuery):
 
 @router.callback_query(F.data == "calc:cost:base", MarginState.waiting_for_cost)
 async def callback_cost_base(callback: types.CallbackQuery, state: FSMContext):
-    # NEW: «берётся из config» — закупочная цена одной кнопкой
+    # NEW: «берётся из config» — закупочная цена (поле cost прайса) одной кнопкой
     data = await state.get_data()
     code = data.get("model")
-    base = _load_prices().get(code) if code else None
+    info = _load_prices().get(code) or {}
+    base = info.get("cost") if code else None
     if base is None:
         await callback.answer("Базовая цена не найдена — введите число", show_alert=True)
         return
     await state.update_data(cost=round(float(base), 2))
     await state.set_state(MarginState.waiting_for_price)
     _log(callback.from_user.id, "calc_cost_entered", {"model": code, "cost": float(base), "from_base": True})
+    head = f"📦 Модель: <b>{html.escape(str(code))}</b>"
+    if info:
+        head += f"\n🏷 Прайс: {_price_ladder(info)}"
     await _edit(
         callback,
-        f"📦 Модель: <b>{html.escape(str(code))}</b>\n"
+        f"{head}\n"
         f"🛒 Закупка (базовая): <b>{_fmt_money(base)}</b>\n\n"
         "Шаг 3/3 — цена продажи клиенту.\nВведите сумму:",
         _cancel_kb(),
@@ -534,7 +622,8 @@ async def process_price_input(message: types.Message, state: FSMContext):
     await add_history_entry(message.from_user.id, entry)
     await state.clear()  # расчёт завершён — состояние больше не нужно
     _log(message.from_user.id, "calc_result", {k: entry[k] for k in ("model", "cost", "price", "margin", "margin_pct")})
-    await message.answer(_render_result(entry), reply_markup=_result_kb(), parse_mode="HTML")
+    # NEW: сверка результата с прайсом модели (если модель есть в config/prices.json)
+    await message.answer(_render_result(entry, _load_prices().get(str(model))), reply_markup=_result_kb(), parse_mode="HTML")
 
 
 @router.message(MarginState.waiting_for_price)

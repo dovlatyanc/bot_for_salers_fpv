@@ -1,15 +1,17 @@
 {
-  "6S2P": 15000,
-  "6S3P": 22000,
-  "6S4P": 28000,
-  "6S5P": 34000,
-  "6S6P": 40000,
-  "8S2P XT-90-S": 17000,
-  "8S2P XT-60": 17000,
-  "8S3P": 24000,
-  "8S4P": 31000,
-  "8S5P": 38000,
-  "8S6P": 45000,
-  "8S7P": 52000,
-  "8S8P": 59000
+    "6S2P": {"cost": 4800, "cash": 7900, "vat5": 8919, "vat22": 9843, "wholesale": 8858, "profit": 3100},
+    "6S3P": {"cost": 5650, "cash": 11900, "vat5": 13435, "vat22": 15817, "wholesale": 14235, "profit": 6250},
+    "6S4P": {"cost": 6300, "cash": 15500, "vat5": 17500, "vat22": 21265, "wholesale": 19139, "profit": 9200},
+    "6S5P": {"cost": 7770, "cash": 19500, "vat5": 22016, "vat22": 26851, "wholesale": 24166, "profit": 11730},
+    "6S6P": {"cost": 9200, "cash": 23000, "vat5": 25968, "vat22": 31648, "wholesale": 28483, "profit": 13800},
+    "6S7P": {"cost": 10700, "cash": 27000, "vat5": 30484, "vat22": 37215, "wholesale": 33493, "profit": 16300},
+    
+    "8S2P XT-90-S": {"cost": 4400, "cash": 10000, "vat5": 11290, "vat22": 13509, "wholesale": 12158, "profit": 5600},
+    "8S2P XT-60": {"cost": 4400, "cash": 10000, "vat5": 11290, "vat22": 13509, "wholesale": 12158, "profit": 5600},
+    "8S3P": {"cost": 6300, "cash": 14000, "vat5": 15806, "vat22": 18825, "wholesale": 16943, "profit": 7700},
+    "8S4P": {"cost": 9300, "cash": 18000, "vat5": 20323, "vat22": 23452, "wholesale": 21107, "profit": 8700},
+    "8S5P": {"cost": 11400, "cash": 22000, "vat5": 24839, "vat22": 28643, "wholesale": 25778, "profit": 10600},
+    "8S6P": {"cost": 13550, "cash": 25000, "vat5": 28226, "vat22": 32175, "wholesale": 28958, "profit": 11450},
+    "8S7P": {"cost": 14100, "cash": 29000, "vat5": 32742, "vat22": 38337, "wholesale": 34504, "profit": 14900},
+    "8S8P": {"cost": 7700, "cash": 10700, "vat5": 12081, "vat22": 12580, "wholesale": 11322, "profit": 3000}
 }
