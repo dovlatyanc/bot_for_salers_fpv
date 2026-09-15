@@ -12,6 +12,10 @@
                            оценка ответа AI (fb_good/fb_bad), dummy;
   handlers/scenarios.py  — «🎯 Сценарии» — готовые шпаргалки продаж (callback "scn:");
                            карточки моделей из сценариев открывает handlers/menu.py;
+  handlers/followup.py   — «⏰ Напоминания» — личные дела менеджера (FSM FollowUpState,
+                           callback "fup:", данные data/followups.json); утренняя
+                           сводка в 9:00 — ЭТАП 2 (в модуле есть хуки: DAILY_SEND_HOUR,
+                           collect_due);
   handlers/selection.py  — экспресс-подбор «🧠 Подбор» (FSM SelectionState, "sel:");
   handlers/search.py     — мульти-фильтр «🔎 Поиск» (callback "srch:", "srchm:");
   handlers/build.py      — «🔧 Своя сборка» (FSM BuildState, "build_conn:");

@@ -10,14 +10,14 @@ from utils import _apply_filters
 MAIN_BUTTONS = {
     "📊 ТТХ", "🧠 Подбор", "🎯 Сценарии", "🔎 Поиск", "🤖 AI-ассистент", "🛑 Стоп-лист",
     "📦 Памятка", "🔧 Своя сборка", "📝 Обратная связь",
-    "💰 Калькулятор", "📊 История расчётов",
+    "💰 Калькулятор", "📊 История расчётов", "⏰ Напоминания",
 }
 
 main_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📊 ТТХ"), KeyboardButton(text="🔎 Поиск"), KeyboardButton(text="🤖 AI-ассистент")],
         [KeyboardButton(text="🧠 Подбор"), KeyboardButton(text="🎯 Сценарии"), KeyboardButton(text="🔧 Своя сборка")],
-        [KeyboardButton(text="💰 Калькулятор"), KeyboardButton(text="📊 История расчётов")],
+        [KeyboardButton(text="💰 Калькулятор"), KeyboardButton(text="📊 История расчётов"), KeyboardButton(text="⏰ Напоминания")],
         [KeyboardButton(text="🛑 Стоп-лист"), KeyboardButton(text="📦 Памятка")],
         [KeyboardButton(text="📝 Обратная связь")],
     ],
