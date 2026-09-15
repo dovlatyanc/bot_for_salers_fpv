@@ -1,12 +1,23 @@
 """
-Пакет вспомогательных модулей бота (тексты и скрипты, вынесенные из bot.py).
+Пакет обработчиков бота (роутеры aiogram 3, вынесенные из bot.py).
 
-Модули пакета не импортируют bot.py — зависимости строго в одну сторону,
-поэтому циклических импортов нет.
+Каждый модуль объявляет свой Router и НЕ импортирует точку входа bot.py —
+общие ресурсы (бот, логгеры, переменные окружения) берутся из config,
+поэтому зависимости строго в одну сторону и циклических импортов нет:
 
+  handlers/calculator.py — «💰 Калькулятор», «📊 История расчётов», /cancel
+                           (FSM MarginState, callback "calc:");
+  handlers/menu.py       — /start, /help, /ai, ТТХ (row:/model:), /checklist,
+                           стоп-лист, памятка, обратная связь (FSM FeedbackState),
+                           оценка ответа AI (fb_good/fb_bad), dummy;
+  handlers/selection.py  — экспресс-подбор «🧠 Подбор» (FSM SelectionState, "sel:");
+  handlers/search.py     — мульти-фильтр «🔎 Поиск» (callback "srch:", "srchm:");
+  handlers/build.py      — «🔧 Своя сборка» (FSM BuildState, "build_conn:");
+  handlers/voice.py      — голосовые сообщения (распознавание через AI-прокси);
+  handlers/fallback.py   — fallback: любой текст → AI, неизвестные команды, прочий контент.
 
-handlers/calculator.py — модуль с собственным Router (FSM MarginState,
-кнопки «💰 Калькулятор» и «📊 История расчётов»); подключается в bot.py
-через dp.include_router. Как и остальные модули пакета, bot.py не импортирует.
+Подключение (bot.py, порядок важен — calculator первым, fallback последним):
+    dp.include_router(calculator_router)
+    ...
+    dp.include_router(fallback_router)
 """
-

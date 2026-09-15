@@ -13,7 +13,7 @@
 
 Модуль не импортирует bot.py (см. handlers/__init__.py): список моделей и базовые
 цены берутся из config/prices.json, логи пишутся через logging.getLogger(...)
-(логгеры 'dialog' и 'system' настраиваются в bot.py).
+(логгеры 'dialog' и 'system' настраиваются в logging_setup.py).
 
 Подключение (в bot.py, сразу после создания Dispatcher):
     from handlers.calculator import router as calculator_router

@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Секреты
+.env
+
+# Логи и runtime-данные бота
+*.log
+config/calc_history.json
+
+# Node (fpv-ai-proxy)
+node_modules/

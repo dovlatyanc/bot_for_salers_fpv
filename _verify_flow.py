@@ -1,10 +1,18 @@
-"""Временная E2E-проверка ветки «Не знаю» через реальный обработчик callback_selection."""
+"""Временная E2E-проверка ветки «Не знаю» через реальный обработчик callback_selection.
+
+Примечание (паритет с монолитом 7800d7a): для 10" (2 рамы) монолит НЕ сохраняет дрон
+в state на шаге выбора рамы (update_data(drone=...) только в _sel_show_unk_results),
+поэтому sel:fr:6S после экрана рамы закономерно уходит в «потерю контекста» -> экран
+дрона. Сплит воспроизводит это поведение 1:1. Латентный баг монолита, не регрессия.
+"""
 import asyncio
 
-import bot
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.storage.base import StorageKey
-from aiogram.fsm.storage.memory import MemoryStorage
+import handlers.selection as selection  # noqa: E402
+from aiogram.fsm.context import FSMContext  # noqa: E402
+from aiogram.fsm.storage.base import StorageKey  # noqa: E402
+from aiogram.fsm.storage.memory import MemoryStorage  # noqa: E402
+from data import FILTER_LABELS  # noqa: E402
+from states import SelectionState  # noqa: E402
 
 
 class Msg:
@@ -40,7 +48,7 @@ def buttons(cb):
 
 async def press(ctx, data):
     cb = CB(data)
-    await bot.callback_selection(cb, ctx)
+    await selection.callback_selection(cb, ctx)
     return cb
 
 
@@ -56,7 +64,7 @@ async def main():
 
     # --- Сценарий 1: «Не знаю» -> 10" -> выбор рамы -> 6S -> результаты -> назад ---
     ctx = await new_ctx()
-    await ctx.set_state(bot.SelectionState.step_a)
+    await ctx.set_state(SelectionState.step_a)
     cb = await press(ctx, "sel:a:unknown")
     print("=== Шаг «Не знаю» -> выбор дрона ===")
     print("state:", await ctx.get_state())
@@ -94,19 +102,19 @@ async def main():
     # --- Сценарий 2: дрон с одной рамой — шаг выбора рамы пропускается ---
     for drone, expect in (("7", 1), ("9", 1), ("12", 2), ("13", 4), ("15", 7), ("hex", 5)):
         ctx = await new_ctx()
-        await ctx.set_state(bot.SelectionState.step_a)
+        await ctx.set_state(SelectionState.step_a)
         await press(ctx, "sel:a:unknown")
         cb = await press(ctx, f"sel:dr:{drone}")
         rows = buttons(cb)
         model_rows = [r for r in rows if not r[0].startswith("⬅️")]
-        print(f'\n=== {bot.FILTER_LABELS["drone"][drone]}: шаг рамы пропущен, моделей {len(model_rows)} (ожидали {expect}) ===')
+        print(f'\n=== {FILTER_LABELS["drone"][drone]}: шаг рамы пропущен, моделей {len(model_rows)} (ожидали {expect}) ===')
         print("state:", await ctx.get_state())
         print(cb.message.text)
         print(rows)
 
     # --- Сценарий 3: пустая комбинация дрон+рама (несуществующая рама) ---
     ctx = await new_ctx()
-    await ctx.set_state(bot.SelectionState.step_frame)
+    await ctx.set_state(SelectionState.step_frame)
     await ctx.update_data(drone="10")
     cb = await press(ctx, "sel:fr:2S")
     print("\n=== Пустая комбинация -> понятное сообщение + 2 кнопки ===")
@@ -116,7 +124,7 @@ async def main():
 
     # --- Сценарий 4: потеря контекста (state=step_frame без drone) ---
     ctx = await new_ctx()
-    await ctx.set_state(bot.SelectionState.step_frame)
+    await ctx.set_state(SelectionState.step_frame)
     cb = await press(ctx, "sel:fr:6S")
     print("\n=== Потеря контекста -> перезапуск с выбора дрона ===")
     print("state:", await ctx.get_state())
@@ -124,17 +132,17 @@ async def main():
 
     # --- Сценарий 5: FSM-гварды не сломаны ---
     ctx = await new_ctx()
-    await ctx.set_state(bot.SelectionState.step_a)
+    await ctx.set_state(SelectionState.step_a)
     cb = await press(ctx, "sel:dr:10")
     print("\n=== Гвард: sel:dr на шаге А игнорируется === черновик экрана:", cb.message.text)
     ctx = await new_ctx()
-    await ctx.set_state(bot.SelectionState.step_drone)
+    await ctx.set_state(SelectionState.step_drone)
     cb = await press(ctx, "sel:fr:6S")
     print("=== Гвард: sel:fr на шаге дрона игнорируется === черновик экрана:", cb.message.text)
 
     # --- Сценарий 6: «Начать заново» с экрана результатов ---
     ctx = await new_ctx()
-    await ctx.set_state(bot.SelectionState.step_a)
+    await ctx.set_state(SelectionState.step_a)
     await press(ctx, "sel:a:unknown")
     await press(ctx, "sel:dr:12")
     cb = await press(ctx, "sel:restart")

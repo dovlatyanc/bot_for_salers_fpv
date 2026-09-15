@@ -1,4 +1,4 @@
-"""Временная проверка handlers/calculator.py (FSM MarginState) и его подключения в bot.py.
+"""Проверка handlers/calculator.py (FSM MarginState) и его подключения в bot.py.
 Запуск: .venv\\Scripts\\python.exe _verify_calc.py
 """
 import asyncio
@@ -16,8 +16,10 @@ try:
 except Exception:
     pass
 
-import bot  # noqa: E402  (регистрирует все хендлеры, включая include_router калькулятора)
+import bot  # noqa: E402  (точка входа: собирает dp со всеми роутерами)
 import handlers.calculator as calc  # noqa: E402
+from data import MODELS  # noqa: E402
+from keyboards import MAIN_BUTTONS, main_kb  # noqa: E402
 
 # История — во временный файл, чтобы не трогать реальную config/calc_history.json
 calc.HISTORY_PATH = Path(tempfile.gettempdir()) / "calc_history_test.json"
@@ -64,23 +66,20 @@ class FakeCb:
         self.answers.append((text, show_alert))
 
 
-
-
-
 async def main():
     ok = []
 
     # 0) роутер подключён, кнопки в меню
     assert any(getattr(r, "name", "") == "calculator" for r in bot.dp.sub_routers), "router not included"
-    assert "💰 Калькулятор" in bot.MAIN_BUTTONS and "📊 История расчётов" in bot.MAIN_BUTTONS
-    kb_texts = [b.text for row in bot.main_kb.keyboard for b in row]
+    assert "💰 Калькулятор" in MAIN_BUTTONS and "📊 История расчётов" in MAIN_BUTTONS
+    kb_texts = [b.text for row in main_kb.keyboard for b in row]
     assert "💰 Калькулятор" in kb_texts and "📊 История расчётов" in kb_texts
     ok.append("router+menu")
 
     # prices.json покрывает все модели каталога
     prices = calc._load_prices()
     assert prices, "prices.json пуст"
-    missing = set(bot.MODELS) - set(prices)
+    missing = set(MODELS) - set(prices)
     assert not missing, f"нет цен для: {missing}"
     ok.append("prices.json")
 
