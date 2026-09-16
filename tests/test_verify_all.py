@@ -33,6 +33,11 @@ def test_verify_calc_script():
     import _verify_calc  # noqa: F401
 
 
+def test_verify_followup_script():
+    """«⏰ Напоминания» + ЭТАП 2 (утренняя сводка о follow-up) — проверки при импорте."""
+    import _verify_followup  # noqa: F401
+
+
 def test_verify_scenarios_script():
     import _verify_scenarios
     asyncio.run(_verify_scenarios.main())

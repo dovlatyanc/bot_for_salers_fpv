@@ -10,13 +10,15 @@
   utils/     — фильтрация, форматирование, отправка карточек;
   services/  — сервис-слой: ai_providers (провайдеры AI, выбор через AI_PROVIDER в .env);
   ai/        — фасад над AI-провайдером: ответы, feedback-кнопки, логирование;
-  handlers/  — роутеры: calculator, menu, scenarios, followup, faq,
-               objections, selection, search, build, voice, fallback.
+  handlers/  — роутеры: calculator, menu, scenarios, followup (включая
+               reminders_loop — фоновая утренняя сводка о follow-up),
+               faq, objections, selection, search, build, voice, fallback.
 
 Запуск: python bot.py (из корня проекта).
 """
 
 import asyncio
+import contextlib
 
 from aiogram import Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -26,7 +28,7 @@ from handlers.build import router as build_router
 from handlers.calculator import router as calculator_router
 from handlers.fallback import router as fallback_router
 from handlers.faq import router as faq_router
-from handlers.followup import router as followup_router
+from handlers.followup import reminders_loop, router as followup_router
 from handlers.menu import router as menu_router
 from handlers.objections import router as objections_router
 from handlers.scenarios import router as scenarios_router
@@ -77,16 +79,24 @@ async def main():
             "Подбор) работают независимо."
         )
 
+    # Система напоминаний о follow-up (ЭТАП 2): фоновая утренняя сводка в 9:00.
+    # Задача одна на процесс и живёт независимо от переподключений polling.
+    reminders_task = asyncio.create_task(reminders_loop(bot))
     retry_delay, max_retry_delay = 5, 60
-    while True:
-        try:
-            await dp.start_polling(bot)
-            break
-        except Exception as e:
-            system_logger.error(f"Polling error: {e}")
-            system_logger.info(f"Restarting in {retry_delay}s...")
-            await asyncio.sleep(retry_delay)
-            retry_delay = min(retry_delay * 1.5, max_retry_delay)
+    try:
+        while True:
+            try:
+                await dp.start_polling(bot)
+                break
+            except Exception as e:
+                system_logger.error(f"Polling error: {e}")
+                system_logger.info(f"Restarting in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 1.5, max_retry_delay)
+    finally:
+        reminders_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await reminders_task
 
 
 if __name__ == "__main__":

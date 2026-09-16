@@ -18,13 +18,19 @@
   fup:list / fup:cancel    — к списку / закрыть.
 
 Хранение: data/followups.json —
-  {"seq": N, "items": [{id, user_id, text, due, created_at, done, done_at}]}
+  {"seq": N, "last_daily": "ГГГГ-ММ-ДД", "items": [{id, user_id, text, due,
+  created_at, done, done_at}]}
 Запись атомарная (tmp + os.replace) под asyncio.Lock — по образцу
 config/calc_history.json из handlers/calculator.py.
 
-ЭТАП 2 (НЕ подключено по требованию): утренняя сводка в 9:00.
-Хуки готовы: константа DAILY_SEND_HOUR и collect_due(user_id, on_date) —
-останется добавить asyncio-планировщик в bot.py и рассылку.
+Система напоминаний о follow-up (ЭТАП 2): reminders_loop(bot) запускается из
+bot.py фоновым asyncio-заданием и ежедневно в DAILY_SEND_HOUR:00 рассылает
+утреннюю сводку (🔴 просроченные / 🟡 на сегодня) всем, у кого такие
+напоминания есть: daily_recipients → render_digest → send_daily_digest.
+Факт отправки за сутки — ключ last_daily в data/followups.json: рестарт в
+течение дня дубль не отправит, а пропущенная сводка догоняется при старте;
+неудавшаяся рассылка повторяется каждые DIGEST_RETRY_DELAY секунд до конца
+суток.
 """
 
 import asyncio
@@ -52,9 +58,10 @@ FOLLOWUPS_PATH = BASE_DIR / "data" / "followups.json"
 
 FOLLOWUP_BUTTON = "⏰ Напоминания"
 
-DAILY_SEND_HOUR = 9   # ЭТАП 2: час утренней сводки (пока не используется)
-ACTIVE_LIMIT = 20     # максимум напоминаний в списке на экране
-DONE_LIMIT = 10       # сколько выполненных показывать
+DAILY_SEND_HOUR = 9       # час утренней сводки о follow-up (reminders_loop)
+DIGEST_RETRY_DELAY = 300  # повтор неудавшейся рассылки сводки, сек
+ACTIVE_LIMIT = 20         # максимум напоминаний на экране (список и сводка)
+DONE_LIMIT = 10           # сколько выполненных показывать
 
 # Кнопки меню, по которым можно выйти из ввода напоминания (сама
 # «⏰ Напоминания» — перезапуск экрана, а не выход)
@@ -173,7 +180,7 @@ def get_done(user_id: int, limit: int = DONE_LIMIT) -> list[dict]:
 
 
 def collect_due(user_id: int, on_date: date | None = None) -> list[dict]:
-    """ЭТАП 2 (хук утренней сводки в 9:00): напоминания со сроком на дату."""
+    """Активные напоминания со сроком ровно на дату (хук утренней сводки)."""
     day = on_date or date.today()
     return [i for i in get_active(user_id) if i.get("due") == day.isoformat()]
 
@@ -290,6 +297,166 @@ def _render_done(items: list[dict]) -> str:
         lines.append(f"• {_fmt_stamp(it.get('done_at'))} — {html.escape(str(it.get('text', '')))}")
     lines.append("\n↩️ — вернуть в активные, 🗑 — удалить совсем.")
     return "\n".join(lines)
+
+
+# ============================================================
+# ЭТАП 2: СИСТЕМА НАПОМИНАНИЙ О FOLLOW-UP (утренняя сводка)
+# ============================================================
+# reminders_loop(bot) запускается из bot.py фоновым asyncio-заданием:
+# ежедневно в DAILY_SEND_HOUR:00 каждому, у кого есть просроченные или
+# «на сегодня» напоминания, уходит сводка. Факт отправки за сутки — ключ
+# last_daily в data/followups.json (защита от дубля при рестарте; при
+# старте пропущенная за сегодня сводка догоняется).
+
+
+def _get_last_daily() -> date | None:
+    """Дата последней успешной утренней сводки (ключ last_daily в JSON)."""
+    return _parse_iso_date(_read().get("last_daily"))
+
+
+async def _set_last_daily(day: date) -> None:
+    async with _file_lock:
+        data = _read()
+        data["last_daily"] = day.isoformat()
+        _write(data)
+
+
+def daily_recipients(on_date: date | None = None) -> list[int]:
+    """user_id всех менеджеров с активными напоминаниями на дату или ранее.
+
+    Выполненные, будущие и «без срока» в рассылку не попадают.
+    """
+    iso = (on_date or date.today()).isoformat()
+    users: set[int] = set()
+    for it in _read().get("items", []):
+        if it.get("done"):
+            continue
+        due = it.get("due")
+        if due and str(due) <= iso and it.get("user_id"):
+            users.add(int(it["user_id"]))
+    return sorted(users)
+
+
+def render_digest(user_id: int, on_date: date | None = None) -> str | None:
+    """Текст утренней сводки: 🔴 просроченные + 🟡 на сегодня.
+
+    None — напоминаний к отправке нет (менеджера не беспокоим).
+    """
+    day = on_date or date.today()
+    today_items = collect_due(user_id, day)
+    over_items: list[tuple[date, dict]] = []
+    for it in get_active(user_id):
+        d = _parse_iso_date(it.get("due"))
+        if d is not None and d < day:
+            over_items.append((d, it))
+    if not today_items and not over_items:
+        return None
+    lines = ["⏰ <b>Follow-up на сегодня</b>\n"]
+    shown = 0
+    if over_items:
+        lines.append("\n<b>🔴 Просроченные:</b>")
+        for d, it in sorted(over_items, key=lambda p: (p[0], p[1].get("id", 0))):
+            if shown >= ACTIVE_LIMIT:
+                break
+            lines.append(f"• {_fmt_due(d, day)} — {html.escape(str(it.get('text', '')))}")
+            shown += 1
+    if today_items:
+        lines.append("\n<b>🟡 На сегодня:</b>")
+        for it in today_items:
+            if shown >= ACTIVE_LIMIT:
+                break
+            lines.append(f"• {html.escape(str(it.get('text', '')))}")
+            shown += 1
+    hidden = len(today_items) + len(over_items) - shown
+    if hidden > 0:
+        lines.append(f"\n…и ещё {hidden} — откройте «Напоминания».")
+    lines.append("\nОтметить выполненным — «⬅️ Открыть напоминания».")
+    return "\n".join(lines)
+
+
+def _digest_kb() -> types.InlineKeyboardMarkup:
+    return types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text="⬅️ Открыть напоминания", callback_data="fup:list")],
+        [types.InlineKeyboardButton(text="❌ Закрыть", callback_data="fup:cancel")],
+    ])
+
+
+async def send_daily_digest(bot, on_date: date | None = None) -> list[int]:
+    """Рассылает утреннюю сводку всем адресатам daily_recipients.
+
+    Возвращает user_id доставившихся; RuntimeError — адресаты были,
+    но не доставлено никому (планировщик повторит попытку). Факт отправки
+    (last_daily) отмечает вызывающий _run_digest, а не сама рассылка.
+    """
+    day = on_date or date.today()
+    pairs: list[tuple[int, str]] = []
+    for uid in daily_recipients(day):
+        text = render_digest(uid, day)
+        if text:
+            pairs.append((uid, text))
+    if not pairs:
+        return []
+    delivered: list[int] = []
+    for uid, text in pairs:
+        try:
+            await bot.send_message(uid, text, reply_markup=_digest_kb(), parse_mode="HTML")
+            _log(uid, "followup_digest_sent", {"date": day.isoformat()})
+            delivered.append(uid)
+        except Exception as e:
+            system_logger.warning(f"Followup digest to {uid} failed: {e}")
+    if not delivered:
+        raise RuntimeError(f"digest delivery failed for all {len(pairs)} recipients")
+    return delivered
+
+
+def _seconds_until(hour: int, now: datetime | None = None) -> float:
+    """Секунды до ближайшего hour:00:00 по локальным часам."""
+    now = now or datetime.now()
+    target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return (target - now).total_seconds()
+
+
+def _digest_due_now(day: date, now: datetime | None = None) -> bool:
+    """Сводка за day ещё не уходила и окно DAILY_SEND_HOUR уже наступило."""
+    now = now or datetime.now()
+    return _get_last_daily() != day and now.hour >= DAILY_SEND_HOUR
+
+
+async def _run_digest(bot, day: date) -> None:
+    """Сводка за day: отправка + отметка last_daily; повтор при неудаче."""
+    while True:
+        try:
+            delivered = await send_daily_digest(bot, day)
+            await _set_last_daily(day)
+            system_logger.info(f"Followup digest sent to {len(delivered)} recipient(s)")
+            return
+        except Exception as e:
+            system_logger.error(f"Followup digest failed: {e}")
+            if date.today() != day:
+                return
+            await asyncio.sleep(DIGEST_RETRY_DELAY)
+
+
+async def reminders_loop(bot) -> None:
+    """ЭТАП 2: фоновый планировщик утренней сводки (запускается из bot.py).
+
+    При старте догоняет пропущенную за сегодня сводку, затем спит до
+    ближайшего DAILY_SEND_HOUR:00. Живёт, пока жив процесс; bot.py отменяет
+    задачу при выходе.
+    """
+    system_logger.info(
+        f"Followup reminders loop started (daily at {DAILY_SEND_HOUR:02d}:00)"
+    )
+    day = date.today()
+    if _digest_due_now(day):
+        await _run_digest(bot, day)
+    while True:
+        delay = _seconds_until(DAILY_SEND_HOUR)
+        system_logger.info(f"Followup digest: next run in {delay / 3600:.1f} h")
+        await asyncio.sleep(delay)
+        await _run_digest(bot, date.today())
 
 
 # ============================================================

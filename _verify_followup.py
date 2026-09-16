@@ -11,7 +11,10 @@
   6. Отметка выполненным → пропало из активных, появилось в «Выполненных»;
      вернуть; удалить; изоляция пользователей;
   7. Выходы из FSM: «отмена», кнопка меню, повторная «⏰ Напоминания»;
-  8. collect_due — хук утренней сводки (ЭТАП 2).
+  8. collect_due — активные напоминания со сроком на дату;
+  9. ЭТАП 2 (система напоминаний о follow-up): адресаты daily_recipients,
+     рендер render_digest, рассылка send_daily_digest, _run_digest с
+     отметкой last_daily (защита от дубля при рестарте).
 
 Запуск: .venv\\Scripts\\python.exe _verify_followup.py
 """
@@ -199,6 +202,38 @@ async def main():
     assert (await state.get_state()) is None
     assert "Напоминания" in m.answers[-1][0], m.answers[-1][0]
     ok.append("exits")
+
+    # 10) ЭТАП 2: система напоминаний о follow-up — адресаты, рендер, рассылка
+    today = date.today()
+    await fup.add_followup(4242, "сводка на сегодня", today)
+    await fup.add_followup(4242, "сводка просрочка", today - timedelta(days=1))
+    await fup.add_followup(4242, "сводка будущее", today + timedelta(days=1))
+    await fup.add_followup(4243, "чужое на сегодня", today)
+    assert fup.daily_recipients() == [4242, 4243], fup.daily_recipients()
+    digest = fup.render_digest(4242)
+    assert "Follow-up" in digest and "Просроченные" in digest and "На сегодня" in digest
+    assert "сводка просрочка" in digest and "сводка на сегодня" in digest
+    assert fup.render_digest(999) is None            # без дедлайнов — не беспокоим
+
+    class _FakeBot:
+        def __init__(self):
+            self.sends = []
+
+        async def send_message(self, chat_id, text, **kwargs):
+            self.sends.append((chat_id, text, kwargs))
+
+    fake_bot = _FakeBot()
+    assert await fup.send_daily_digest(fake_bot) == [4242, 4243]
+    assert {uid for uid, _, _ in fake_bot.sends} == {4242, 4243}
+    assert all(kw.get("parse_mode") == "HTML" for _, _, kw in fake_bot.sends)
+    cbs = [b.callback_data for row in fake_bot.sends[0][2]["reply_markup"].inline_keyboard
+           for b in row]
+    assert "fup:list" in cbs and "fup:cancel" in cbs, cbs
+    assert fup._get_last_daily() is None             # факт отмечает только _run_digest
+    await fup._run_digest(fake_bot, today)
+    assert fup._get_last_daily() == today
+    assert fup._digest_due_now(today) is False       # рестарт в тот же день — без дубля
+    ok.append("digest")
 
     print("OK:", ", ".join(ok))
 
