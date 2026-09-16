@@ -2,7 +2,7 @@
 Конфигурация приложения: переменные окружения, логгеры и единый экземпляр Bot.
 
 Все модули импортируют только config (зависимости строго в одну сторону:
-config ← data/states/keyboards/utils/ai ← handlers ← bot.py-точка входа),
+config ← data/states/keyboards/utils/ai/services ← handlers ← bot.py-точка входа),
 поэтому циклических импортов нет, а объект bot во всём приложении один.
 """
 
@@ -35,6 +35,13 @@ dialog_logger = logging.getLogger("dialog")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 AI_PROXY_URL = os.getenv("AI_PROXY_URL", "").strip()
 AI_PROXY_TOKEN = os.getenv("AI_PROXY_TOKEN", "").strip()
+# Провайдер AI: cloudflare (Cloudflare AI Worker) | yandex (YandexGPT + SpeechKit)
+AI_PROVIDER = os.getenv("AI_PROVIDER", "cloudflare").strip().lower()
+# --- YandexGPT (при AI_PROVIDER=yandex) ---
+YANDEX_API_KEY = os.getenv("YANDEX_API_KEY", "").strip()
+YANDEX_IAM_TOKEN = os.getenv("YANDEX_IAM_TOKEN", "").strip()
+YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID", "").strip()
+YANDEX_MODEL = os.getenv("YANDEX_MODEL", "yandexgpt").strip()
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 PROXY_URL = os.getenv("PROXY_URL", "").strip()
 

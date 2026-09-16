@@ -7,19 +7,29 @@ from data import FILTER_LABELS, PLATFORMS, VOLTAGES, CAP_CLASSES
 from utils import _apply_filters
 
 
-MAIN_BUTTONS = {
-    "📊 ТТХ", "🧠 Подбор", "🎯 Сценарии", "🔎 Поиск", "🤖 AI-ассистент", "🛑 Стоп-лист",
-    "📦 Памятка", "🔧 Своя сборка", "📝 Обратная связь",
-    "💰 Калькулятор", "📊 История расчётов", "⏰ Напоминания", "❓ FAQ",
-}
+#: Все reply-кнопки главного меню. frozenset — для проверок «это кнопка меню?».
+#: Порядок в клавиатуре задаётся отдельно в MAIN_KEYBOARD_LAYOUT.
+MAIN_BUTTONS = frozenset({
+    "📊 ТТХ", "🧠 Подбор", "🎯 Сценарии", "🔎 Поиск", "🤖 AI-ассистент",
+    "🛑 Стоп-лист", "📦 Памятка", "🔧 Своя сборка", "📝 Обратная связь",
+    "💬 Возражения", "💰 Калькулятор", "📊 История расчётов", "⏰ Напоминания",
+    "❓ FAQ",
+})
+
+#: Раскладка главной клавиатуры. Сгруппирована по смыслу:
+#:   продажа → справочники → инструменты → клиент → особое.
+MAIN_KEYBOARD_LAYOUT = (
+    ("🧠 Подбор",          "🎯 Сценарии",       "💬 Возражения"),
+    ("📊 ТТХ",             "🔎 Поиск",          "❓ FAQ"),
+    ("💰 Калькулятор",     "🔧 Своя сборка",    "📦 Памятка"),
+    ("📝 Обратная связь",  "⏰ Напоминания",    "📊 История"),
+    ("🛑 Стоп-лист",       "🤖 AI-ассистент"),
+)
 
 main_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="📊 ТТХ"), KeyboardButton(text="🔎 Поиск"), KeyboardButton(text="🤖 AI-ассистент")],
-        [KeyboardButton(text="🧠 Подбор"), KeyboardButton(text="🎯 Сценарии"), KeyboardButton(text="🔧 Своя сборка")],
-        [KeyboardButton(text="💰 Калькулятор"), KeyboardButton(text="📊 История расчётов"), KeyboardButton(text="⏰ Напоминания")],
-        [KeyboardButton(text="🛑 Стоп-лист"), KeyboardButton(text="📦 Памятка"), KeyboardButton(text="❓ FAQ")],
-        [KeyboardButton(text="📝 Обратная связь")],
+        [KeyboardButton(text=label) for label in row]
+        for row in MAIN_KEYBOARD_LAYOUT
     ],
     resize_keyboard=True,
 )

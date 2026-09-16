@@ -1,42 +1,25 @@
-import aiohttp
 import json
 from datetime import datetime
 
 from aiogram import types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from config import AI_PROXY_URL, AI_PROXY_TOKEN, dialog_logger, system_logger
+from config import dialog_logger, system_logger
+from services.ai_providers import AIProviderError, get_ai_provider
 from utils import split_text
 
 
 async def ask_ai(question: str) -> str:
-    if not AI_PROXY_URL:
-        system_logger.warning("AI_PROXY_URL not configured")
-        return "AI-ассистент ещё не подключён. Заполните AI_PROXY_URL и AI_PROXY_TOKEN в .env"
+    """Отвечает на вопрос через AI-провайдера, выбранного в .env (AI_PROVIDER).
 
-    headers = {"Content-Type": "application/json"}
-    if AI_PROXY_TOKEN:
-        headers["Authorization"] = f"Bearer {AI_PROXY_TOKEN}"
-
-    payload = {"question": question, "source": "python-telegram-bot"}
-    timeout = aiohttp.ClientTimeout(total=90)
-
+    HTTP-детали (эндпоинты, аутентификация, форматы) инкапсулированы
+    в services/ai_providers; здесь только превращение ошибок провайдера
+    в текст ответа, чтобы пользователь всегда получил реакцию.
+    """
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(AI_PROXY_URL, json=payload, headers=headers) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
-                    system_logger.error(f"AI proxy returned {resp.status}: {body[:500]}")
-                    return f"Cloudflare AI вернул ошибку {resp.status}:\n{body[:500]}"
-                data = await resp.json()
-                answer = data.get("answer")
-                if not answer:
-                    system_logger.warning("AI returned empty answer")
-                    return "AI вернул пустой ответ."
-                return answer
-    except Exception as e:
-        system_logger.exception("AI request failed")
-        return f"Ошибка запроса к AI: {e}"
+        return await get_ai_provider().ask(question)
+    except AIProviderError as e:
+        return str(e)
 
 
 async def answer_ai_with_feedback(message: types.Message, text: str):

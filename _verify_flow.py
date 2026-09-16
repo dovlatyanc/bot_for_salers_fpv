@@ -1,9 +1,9 @@
 """Временная E2E-проверка ветки «Не знаю» через реальный обработчик callback_selection.
 
-Примечание (паритет с монолитом 7800d7a): для 10" (2 рамы) монолит НЕ сохраняет дрон
-в state на шаге выбора рамы (update_data(drone=...) только в _sel_show_unk_results),
-поэтому sel:fr:6S после экрана рамы закономерно уходит в «потерю контекста» -> экран
-дрона. Сплит воспроизводит это поведение 1:1. Латентный баг монолита, не регрессия.
+Фикс: _sel_show_step_frame сохраняет drone в FSM-state (update_data), поэтому
+sel:fr:<frame> после экрана выбора рамы сразу показывает кандидатов. В монолите
+7800d7a drone на этом шаге не сохранялся — sel:fr:6S «терял контекст» и возвращал
+экран дрона (латентный баг монолита, исправлен по запросу).
 """
 import asyncio
 
@@ -76,12 +76,14 @@ async def main():
     print("state:", await ctx.get_state())
     print(cb.message.text)
     print(buttons(cb))
+    assert (await ctx.get_data()).get("drone") == "10", "дрон должен сохраняться в state на шаге рамы"
 
     cb = await press(ctx, "sel:fr:6S")
-    print("\n=== 10\" / 6S -> результаты (5 моделей, шага назад к раме нет? есть) ===")
+    print("\n=== 10\" / 6S -> результаты (5 моделей) ===")
     print("state:", await ctx.get_state())
     print(cb.message.text)
     print(buttons(cb))
+    assert "кандидаты" in cb.message.text, "после выбора рамы должны сразу показываться результаты"
 
     cb = await press(ctx, "sel:frback")
     print("\n=== «Вернуться к выбору рамы» -> экран рамы ===")

@@ -143,7 +143,7 @@ async def main():
                 problems.append(f"раздел «{section}»")
         check(not problems, f"{sid}: рендер ок ({len(text)} симв.)", f"{sid}: {problems}")
 
-    full_text = ("\n\n" + "—" * 30 + "\n\n").join(_scenario_text(s, html=False) for s in SCENARIO_ORDER)
+    full_text = ("\n\n" + "—" * 30 + "\n\n").join(_scenario_text(s, with_html=False) for s in SCENARIO_ORDER)
     check("<b>" not in full_text, "полная сводка — plain-текст (без тегов)", "в полной сводке остались теги")
     from utils import split_text
     parts = split_text(full_text)
@@ -167,8 +167,13 @@ async def main():
     check(scenarios_router.name == "scenarios", "имя роутера: scenarios", f"имя роутера: {scenarios_router.name!r}")
 
     print("== 5. Флоу (симуляция) ==")
+    # button_scenarios теперь принимает state (очистка активного FSM-сценария)
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.storage.base import StorageKey
+    from aiogram.fsm.storage.memory import MemoryStorage
+    _state = FSMContext(storage=MemoryStorage(), key=StorageKey(bot_id=1, chat_id=1, user_id=1))
     msg = _Msg()
-    await button_scenarios(msg)
+    await button_scenarios(msg, _state)
     data = kb_data(_list_kb())
     check(len(msg.answers) == 1 and msg.answers[0][1].get("parse_mode") == "HTML",
           "«🎯 Сценарии» → список (HTML)", "кнопка «🎯 Сценарии» не открывает список")

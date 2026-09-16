@@ -5,9 +5,22 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import bot, system_logger
+from keyboards import MAIN_BUTTONS
 from states import BuildState
 
 router = Router()
+
+BUILD_BUTTON = "🔧 Своя сборка"
+# Кнопки меню, по которым можно выйти из ввода (сама «🔧 Своя сборка» —
+# перезапуск: её перехватывает start_build, зарегистрированный раньше FSM).
+# Зеркало MAIN_BUTTONS — тот же приём, что в calculator/faq/followup.
+MENU_BUTTONS = frozenset(MAIN_BUTTONS) - {BUILD_BUTTON}
+EXIT_WORDS = frozenset({"отмена", "cancel", "❌", "❌ отмена"})
+
+
+def _is_exit(text: str) -> bool:
+    # это выход, если текст — кнопка меню (кроме самой «🔧 Своя сборка») или слово отмены
+    return text in MENU_BUTTONS or text.strip().lower() in EXIT_WORDS
 
 
 @router.message(F.text == "🔧 Своя сборка")
@@ -16,8 +29,14 @@ async def start_build(message: types.Message, state: FSMContext):
     await state.set_state(BuildState.waiting_for_config)
 
 
-@router.message(BuildState.waiting_for_config)
+@router.message(BuildState.waiting_for_config, F.text)
 async def process_build(message: types.Message, state: FSMContext):
+    if _is_exit(message.text):
+        # кнопка меню или «отмена» во время ввода — чистый выход из сценария
+        # (раньше текст кнопки падал в «Неверный формат» и сценарий «залипал»)
+        await state.clear()
+        await message.answer("❌ Своя сборка закрыта. Выберите раздел в меню.")
+        return
     match = re.match(r"^(\d+)[sS](\d+)[pP]$", message.text.strip())
     if not match:
         await message.answer("Неверный формат. Пример: <b>14S12P</b>", parse_mode="HTML")
@@ -60,6 +79,13 @@ async def process_build(message: types.Message, state: FSMContext):
             InlineKeyboardButton(text="Другой", callback_data="build_conn:other"),
         ]])
         await message.answer(f"Выберите разъём для {s}S{p}P:", reply_markup=kb)
+
+
+@router.message(BuildState.waiting_for_config)
+async def process_build_not_text(message: types.Message):
+    # не-текст (фото, голос и т.п.) во время ввода — подсказка (как в calculator/faq);
+    # раньше такой апдейт ронял обработчик на message.text.strip()
+    await message.answer("Отправьте конфигурацию текстом, например <b>14S12P</b>.", parse_mode="HTML")
 
 
 async def _send_build_result(target, data: dict, connector: str):
@@ -116,7 +142,7 @@ async def callback_build_connector(callback: types.CallbackQuery, state: FSMCont
     await callback.answer()
 
 
-@router.message(BuildState.waiting_for_connector)
+@router.message(BuildState.waiting_for_connector, F.text)
 async def process_build_connector(message: types.Message, state: FSMContext):
     data = await state.get_data()
     if "s" not in data or "p" not in data:
@@ -127,6 +153,12 @@ async def process_build_connector(message: types.Message, state: FSMContext):
         return
 
     text = (message.text or "").strip()
+    if _is_exit(text):
+        # кнопка меню или «отмена» — выход; раньше текст кнопки становился
+        # «типом разъёма» и подставлялся в результат расчёта
+        await state.clear()
+        await message.answer("❌ Своя сборка закрыта. Выберите раздел в меню.")
+        return
     if not text:
         await message.answer("Напишите тип разъёма текстом.")
         return
@@ -138,3 +170,8 @@ async def process_build_connector(message: types.Message, state: FSMContext):
 
     await _send_build_result(message, data, connector)
     await state.clear()
+
+
+@router.message(BuildState.waiting_for_connector)
+async def process_build_connector_not_text(message: types.Message):
+    await message.answer("Напишите тип разъёма текстом.")

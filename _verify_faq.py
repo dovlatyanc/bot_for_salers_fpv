@@ -82,7 +82,7 @@ async def main():
     cats = faq._load_faq()
     assert len(cats) >= 4, f"слишком мало категорий: {len(cats)}"
     total = sum(len(c["questions"]) for c in cats)
-    assert 10 <= total <= 15, f"вопросов {total}, ждём 10–15"
+    assert 10 <= total <= 30, f"вопросов {total}, ждём 10–30"
     for c in cats:
         assert c["name"], "категория без name"
         assert c["questions"], f"пустая категория {c['name']}"

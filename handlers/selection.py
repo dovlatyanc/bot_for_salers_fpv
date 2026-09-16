@@ -114,6 +114,10 @@ async def _sel_show_step_drone(callback, state):
 
 async def _sel_show_step_frame(callback, state, drone):
     await state.set_state(SelectionState.step_frame)
+    # FIX: сохраняем дрона в state — sel:fr:<frame> после этого экрана больше
+    # не «теряет контекст» (не возвращает к выбору дрона), а сразу показывает
+    # кандидатов. В монолите drone здесь не сохранялся (латентный баг).
+    await state.update_data(drone=drone)
     frames = _sel_drone_frames(drone)
     try:
         await callback.message.edit_text(

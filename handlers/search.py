@@ -12,6 +12,7 @@ import json
 from datetime import datetime
 
 from aiogram import F, Router, types
+from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import bot, dialog_logger, system_logger
@@ -61,7 +62,9 @@ async def callback_search_model(callback: types.CallbackQuery):
 # === МУЛЬТИ-ФИЛЬТР «🔎 Поиск» ===
 # NEW: точка входа в мульти-фильтр
 @router.message(F.text == "🔎 Поиск")
-async def button_search(message: types.Message):
+async def button_search(message: types.Message, state: FSMContext):
+    # выход из активного FSM-сценария (см. button_ttx в menu.py)
+    await state.clear()
     # MODIFIED: заголовки секций перенесены из label-кнопок в текст сообщения (HTML)
     await message.answer(
         SEARCH_HEADER_TEXT,

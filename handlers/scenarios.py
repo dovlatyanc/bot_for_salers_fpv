@@ -17,6 +17,7 @@ import json
 from datetime import datetime
 
 from aiogram import F, Router, types
+from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import dialog_logger, system_logger
@@ -182,8 +183,11 @@ async def _scenario_full(callback: types.CallbackQuery) -> None:
 # ОБРАБОТЧИКИ
 # ============================================================
 @router.message(F.text == "🎯 Сценарии")
-async def button_scenarios(message: types.Message):
+async def button_scenarios(message: types.Message, state: FSMContext):
     """«🎯 Сценарии» — список сценариев."""
+    # выход из активного FSM-сценария — иначе «зависшее» состояние
+    # перехватывало бы следующие тексты пользователя
+    await state.clear()
     _log(message.from_user.id, "scenarios_open", "list")
     await _show_list(message, edit=False)
 

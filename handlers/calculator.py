@@ -438,7 +438,9 @@ async def start_calculator(message: types.Message, state: FSMContext):
 
 
 @router.message(F.text == HISTORY_BUTTON)
-async def show_history(message: types.Message):
+async def show_history(message: types.Message, state: FSMContext):
+    # выход из активного FSM-сценария (см. button_ttx в menu.py)
+    await state.clear()
     entries = get_history(message.from_user.id)
     _log(message.from_user.id, "calc_history_view", {"count": len(entries)})
     await message.answer(

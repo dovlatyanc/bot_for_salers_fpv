@@ -22,7 +22,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from ai import handle_ai_request
 from config import ADMIN_ID, bot, dialog_logger, system_logger
-from keyboards import main_kb
+from keyboards import MAIN_BUTTONS, main_kb
 from states import FeedbackState
 from utils import get_row, models_by_row, send_model_card
 
@@ -67,7 +67,11 @@ async def cmd_ai(message: types.Message):
     await handle_ai_request(message, args[1].strip())
 
 @router.message(F.text == "📊 ТТХ")
-async def button_ttx(message: types.Message):
+async def button_ttx(message: types.Message, state: FSMContext):
+    # любая кнопка меню — выход из активного FSM-сценария; иначе «зависшее»
+    # состояние (например, ввод конфигурации «Своя сборка») перехватывало
+    # бы следующие тексты пользователя
+    await state.clear()
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -105,7 +109,9 @@ async def cmd_checklist(message: types.Message):
     await message.answer(text)
 
 @router.message(F.text == "🛑 Стоп-лист")
-async def button_stoplist(message: types.Message):
+async def button_stoplist(message: types.Message, state: FSMContext):
+    # выход из активного FSM-сценария (см. button_ttx)
+    await state.clear()
     text = """
 <b>Стоп-факторы и запрещённые формулировки:</b>
 
@@ -124,7 +130,9 @@ async def button_stoplist(message: types.Message):
     await message.answer(text, parse_mode="HTML")
 
 @router.message(F.text == "📦 Памятка")
-async def button_memo(message: types.Message):
+async def button_memo(message: types.Message, state: FSMContext):
+    # выход из активного FSM-сценария (см. button_ttx)
+    await state.clear()
     text = """
 <b>Шаблон памятки клиенту:</b>
 
@@ -142,15 +150,56 @@ async def button_memo(message: types.Message):
     await message.answer(text, parse_mode="HTML")
 
 # ============================================================
+# AI-АССИСТЕНТ (кнопка меню)
+# ============================================================
+@router.message(F.text == "🤖 AI-ассистент")
+async def button_ai_assistant(message: types.Message, state: FSMContext):
+    # Раньше эта кнопка не обрабатывалась вовсе: fallback пропускает тексты из
+    # MAIN_BUTTONS, а FSM-сценарии (например, ввод конфигурации «Своя сборка»)
+    # перехватывали её текст («Неверный формат»). Теперь нажатие выходит из
+    # любого сценария и просит написать вопрос: свободный текст и так уходит
+    # в AI через fallback, отдельное FSM-состояние для вопроса не нужно.
+    await state.clear()
+    dialog_logger.info(json.dumps({
+        'event': 'ai_assistant_open',
+        'user_id': message.from_user.id,
+        'username': message.from_user.username or 'unknown',
+        'timestamp': datetime.now().isoformat()
+    }, ensure_ascii=False))
+    await message.answer(
+        "🤖 <b>AI-ассистент</b>\n\n"
+        "Напишите ваш вопрос одним сообщением — отвечу по клиентам, возражениям "
+        "и продукту.\n<i>Например: клиент просит 8S8P на 10″ — что ответить?</i>",
+        parse_mode="HTML",
+    )
+
+
+# ============================================================
 # ОБРАТНАЯ СВЯЗЬ (состояние)
 # ============================================================
-@router.message(F.text == "📝 Обратная связь")
+FEEDBACK_BUTTON = "📝 Обратная связь"
+FEEDBACK_EXIT_WORDS = frozenset({"отмена", "cancel", "❌", "❌ отмена"})
+
+
+@router.message(F.text == FEEDBACK_BUTTON)
 async def start_feedback(message: types.Message, state: FSMContext):
+    await state.clear()
     await message.answer("Напишите, что нужно улучшить в боте. Я передам это администратору.")
     await state.set_state(FeedbackState.waiting_for_feedback)
 
-@router.message(FeedbackState.waiting_for_feedback)
+@router.message(FeedbackState.waiting_for_feedback, F.text)
 async def process_feedback(message: types.Message, state: FSMContext):
+    raw = (message.text or "").strip()
+    if raw == FEEDBACK_BUTTON:
+        # повторная кнопка — перезапуск сценария (хендлер зарегистрирован выше)
+        await start_feedback(message, state)
+        return
+    if raw in MAIN_BUTTONS or raw.lower() in FEEDBACK_EXIT_WORDS:
+        # кнопка меню или «отмена» во время ввода — чистый выход;
+        # раньше текст кнопки уходил администратору как «отзыв»
+        await state.clear()
+        await message.answer("❌ Обратная связь закрыта. Выберите раздел в меню.")
+        return
     # ЛОГИРОВАНИЕ: обратная связь от пользователя
     dialog_logger.info(json.dumps({
         'event': 'user_feedback_to_admin',
@@ -171,6 +220,12 @@ async def process_feedback(message: types.Message, state: FSMContext):
     else:
         await message.answer("ADMIN_ID не настроен в .env")
     await state.clear()
+
+
+@router.message(FeedbackState.waiting_for_feedback)
+async def process_feedback_not_text(message: types.Message):
+    # не-текст (фото и т.п.) во время ввода — мягкая подсказка (как в faq/followup)
+    await message.answer("Опишите предложение текстом одним сообщением.")
 
 
 # ============================================================
