@@ -36,6 +36,8 @@ from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
+from keyboards import MAIN_BUTTONS
+
 router = Router(name="calculator")
 
 # Общие логгеры бота (настраиваются в bot.py) — свои хендлеры к ним не добавляем
@@ -50,18 +52,16 @@ HISTORY_PATH = BASE_DIR / "config" / "calc_history.json"
 HISTORY_LIMIT = 5      # «последние 5 расчётов этого менеджера»
 DISCOUNT_SHARE = 0.30  # рекомендованный предел скидки — 30% от маржи
 
-# Кнопки главного меню (зеркало MAIN_BUTTONS из bot.py без кнопок самого
-# калькулятора) — по ним можно выйти из FSM-сценария, не оставляя «зависшее» состояние
-MENU_BUTTONS = frozenset({
-    "📊 ТТХ", "🧠 Подбор", "🔎 Поиск", "🤖 AI-ассистент", "🛑 Стоп-лист",
-    "📦 Памятка", "🔧 Своя сборка", "📝 Обратная связь", "🎯 Сценарии",
-    "⏰ Напоминания", "❓ FAQ",
-})
-# слова-выходы, принимаемые в шагах ввода цен (кроме /cancel — он ловится командой)
-EXIT_WORDS = frozenset({"отмена", "cancel", "❌", "❌ отмена"})
-
 CALC_BUTTON = "💰 Калькулятор"
 HISTORY_BUTTON = "📊 История расчётов"
+
+# Кнопки главного меню — зеркало MAIN_BUTTONS из keyboards (без кнопок самого
+# калькулятора) — по ним можно выйти из FSM-сценария, не оставляя «зависшее»
+# состояние. Выводим из MAIN_BUTTONS (как в faq/followup/build), чтобы зеркало
+# не рассинхронизировалось при добавлении новых кнопок меню.
+MENU_BUTTONS = frozenset(MAIN_BUTTONS) - {CALC_BUTTON, HISTORY_BUTTON}
+# слова-выходы, принимаемые в шагах ввода цен (кроме /cancel — он ловится командой)
+EXIT_WORDS = frozenset({"отмена", "cancel", "❌", "❌ отмена"})
 
 
 # ============================================================

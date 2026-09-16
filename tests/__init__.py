@@ -1,0 +1,1 @@
+# Тесты FPV Sales Bot. Запуск из корня проекта: .venv\Scripts\python.exe -m pytest

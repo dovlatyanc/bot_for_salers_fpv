@@ -8,32 +8,25 @@
   obj:full               — все возражения одним сообщением (для печати);
   obj:stop               — только стоп-возражения (5 пунктов из стоп-листа).
 
-Контент — data/objections.py. Общие ресурсы — config.
+Контент — data/objections.py; общие UI-хелперы — utils/ui.py.
 """
-
-import html
-import json
-from datetime import datetime
 
 from aiogram import F, Router, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from config import dialog_logger, system_logger
 from data.objections import OBJECTIONS, OBJECTION_ORDER
-from utils import answer_long
+from utils.ui import (
+    EDIT_SAFE_LIMIT,
+    SEPARATOR,
+    edit_or_send,
+    esc as _esc,
+    log_event,
+    ordered_ids,
+    safe_answer_long,
+    show_screen,
+)
 
 router = Router(name="objections")
-
-EDIT_SAFE_LIMIT = 4000
-SEPARATOR = "\n\n" + "—" * 30 + "\n\n"
-
-
-# ============================================================
-# УТИЛИТЫ
-# ============================================================
-def _esc(value) -> str:
-    """HTML-экранирование пользовательских данных (но не наших <b>-тегов)."""
-    return html.escape(str(value), quote=False)
 
 
 def _objection_text(oid: str, with_html: bool = True) -> str:
@@ -102,18 +95,10 @@ STOP_LIST_TEXT = (
 # ============================================================
 def _ordered_ids(only_stop: bool = False) -> list[str]:
     """OBJECTION_ORDER, отфильтрованный по наличию и (опционально) по stop."""
-    ids = []
-    missing = []
-    for oid in OBJECTION_ORDER:
-        if oid not in OBJECTIONS:
-            missing.append(oid)
-            continue
-        if only_stop and not OBJECTIONS[oid].get("stop"):
-            continue
-        ids.append(oid)
-    if missing:
-        system_logger.warning(f"OBJECTION_ORDER: нет в OBJECTIONS — {missing}")
-    return ids
+    return ordered_ids(
+        OBJECTION_ORDER, OBJECTIONS, only_stop=only_stop,
+        warn_format="OBJECTION_ORDER: нет в OBJECTIONS — {missing}",
+    )
 
 
 def _list_kb() -> InlineKeyboardMarkup:
@@ -153,15 +138,10 @@ def _stop_kb() -> InlineKeyboardMarkup:
 
 
 # ============================================================
-# ЛОГИРОВАНИЕ
+# ЛОГИРОВАНИЕ (ключи событий — как раньше; вывод общий в utils.ui.log_event)
 # ============================================================
 def _log(user_id: int, event: str, objection: str) -> None:
-    dialog_logger.info(json.dumps({
-        "event": event,
-        "user_id": user_id,
-        "objection": objection,
-        "timestamp": datetime.now().isoformat(),
-    }, ensure_ascii=False))
+    log_event(user_id, event, {"objection": objection})
 
 
 def _log_cb(callback: types.CallbackQuery, event: str, objection: str) -> None:
@@ -172,34 +152,17 @@ def _log_cb(callback: types.CallbackQuery, event: str, objection: str) -> None:
 # ХЕЛПЕРЫ
 # ============================================================
 async def _show_list(message: types.Message, *, edit: bool = False) -> None:
-    if edit:
-        try:
-            await message.edit_text(LIST_TEXT, reply_markup=_list_kb(), parse_mode="HTML")
-        except Exception as e:
-            system_logger.warning(f"Objections list edit failed: {e}")
-    else:
-        await message.answer(LIST_TEXT, reply_markup=_list_kb(), parse_mode="HTML")
+    await show_screen(
+        message, LIST_TEXT, _list_kb(), edit=edit,
+        warn_prefix="Objections list edit failed",
+    )
 
 
 async def _show_stop(message: types.Message, *, edit: bool = False) -> None:
-    if edit:
-        try:
-            await message.edit_text(
-                STOP_LIST_TEXT, reply_markup=_stop_kb(), parse_mode="HTML"
-            )
-        except Exception as e:
-            system_logger.warning(f"Objections stop edit failed: {e}")
-    else:
-        await message.answer(
-            STOP_LIST_TEXT, reply_markup=_stop_kb(), parse_mode="HTML"
-        )
-
-
-async def _safe_answer_long(message: types.Message, text: str) -> None:
-    try:
-        await answer_long(message, text)
-    except Exception as e:
-        system_logger.warning(f"answer_long failed: {e}")
+    await show_screen(
+        message, STOP_LIST_TEXT, _stop_kb(), edit=edit,
+        warn_prefix="Objections stop edit failed",
+    )
 
 
 async def _objection_full(callback: types.CallbackQuery) -> None:
@@ -207,7 +170,7 @@ async def _objection_full(callback: types.CallbackQuery) -> None:
     text = SEPARATOR.join(
         _objection_text(oid, with_html=False) for oid in _ordered_ids()
     )
-    await _safe_answer_long(callback.message, text)
+    await safe_answer_long(callback.message, text)
 
 
 # ============================================================
@@ -264,15 +227,9 @@ async def callback_objection(callback: types.CallbackQuery):
         return
 
     _log_cb(callback, "objection_view", oid)
-    text = _objection_text(oid)
-    if len(text) <= EDIT_SAFE_LIMIT:
-        try:
-            await callback.message.edit_text(
-                text, reply_markup=_objection_kb(oid), parse_mode="HTML"
-            )
-        except Exception as e:
-            system_logger.warning(f"Objection view edit failed: {e}")
-            await _safe_answer_long(callback.message, text)
-    else:
-        await _safe_answer_long(callback.message, text)
+    await edit_or_send(
+        callback.message, _objection_text(oid),
+        reply_markup=_objection_kb(oid),
+        warn_prefix="Objection view edit failed",
+    )
     await callback.answer()

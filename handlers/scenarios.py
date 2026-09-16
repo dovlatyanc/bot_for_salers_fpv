@@ -9,34 +9,26 @@
   model:<код>           — НЕ обрабатывается здесь: кнопки «📦 Карточка <модель>»
                           перехватывает роутер menu (зарегистрирован раньше).
 
-Контент сценариев — data/scenarios.py; общие ресурсы (бот, логгеры) — config.
+Контент сценариев — data/scenarios.py; общие UI-хелперы — utils/ui.py.
 """
-
-import html
-import json
-from datetime import datetime
 
 from aiogram import F, Router, types
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from config import dialog_logger, system_logger
 from data import MODELS, SCENARIOS, SCENARIO_ORDER
-from utils import answer_long
+from utils.ui import (
+    EDIT_SAFE_LIMIT,
+    SEPARATOR,
+    edit_or_send,
+    esc as _esc,
+    log_event,
+    ordered_ids,
+    safe_answer_long,
+    show_screen,
+)
 
 router = Router(name="scenarios")
-
-# Telegram: лимит edit_text — 4096 символов. Оставляем запас.
-EDIT_SAFE_LIMIT = 4000
-SEPARATOR = "\n\n" + "—" * 30 + "\n\n"
-
-
-# ============================================================
-# УТИЛИТЫ
-# ============================================================
-def _esc(value) -> str:
-    """HTML-экранирование пользовательских данных (но не наших <b>-тегов)."""
-    return html.escape(str(value), quote=False)
 
 
 def _spec_line(code: str) -> str:
@@ -104,11 +96,10 @@ LIST_TEXT = (
 # ============================================================
 def _ordered_ids() -> list[str]:
     """SCENARIO_ORDER, отфильтрованный по фактическому наличию в SCENARIOS."""
-    ids = [sid for sid in SCENARIO_ORDER if sid in SCENARIOS]
-    missing = [sid for sid in SCENARIO_ORDER if sid not in SCENARIOS]
-    if missing:
-        system_logger.warning(f"SCENARIO_ORDER: нет в SCENARIOS — {missing}")
-    return ids
+    return ordered_ids(
+        SCENARIO_ORDER, SCENARIOS,
+        warn_format="SCENARIO_ORDER: нет в SCENARIOS — {missing}",
+    )
 
 
 def _list_kb() -> InlineKeyboardMarkup:
@@ -133,15 +124,10 @@ def _scenario_kb(sid: str) -> InlineKeyboardMarkup:
 
 
 # ============================================================
-# ЛОГИРОВАНИЕ
+# ЛОГИРОВАНИЕ (ключи событий — как раньше; вывод общий в utils.ui.log_event)
 # ============================================================
 def _log(user_id: int, event: str, scenario: str) -> None:
-    dialog_logger.info(json.dumps({
-        "event": event,
-        "user_id": user_id,
-        "scenario": scenario,
-        "timestamp": datetime.now().isoformat(),
-    }, ensure_ascii=False))
+    log_event(user_id, event, {"scenario": scenario})
 
 
 def _log_cb(callback: types.CallbackQuery, event: str, scenario: str) -> None:
@@ -153,21 +139,10 @@ def _log_cb(callback: types.CallbackQuery, event: str, scenario: str) -> None:
 # ============================================================
 async def _show_list(message: types.Message, *, edit: bool = False) -> None:
     """Показать список сценариев: новым сообщением или редактированием."""
-    if edit:
-        try:
-            await message.edit_text(LIST_TEXT, reply_markup=_list_kb(), parse_mode="HTML")
-        except Exception as e:
-            system_logger.warning(f"Scenarios list edit failed: {e}")
-    else:
-        await message.answer(LIST_TEXT, reply_markup=_list_kb(), parse_mode="HTML")
-
-
-async def _safe_answer_long(message: types.Message, text: str) -> None:
-    """answer_long без падения потока: ошибку — в system-log."""
-    try:
-        await answer_long(message, text)
-    except Exception as e:
-        system_logger.warning(f"answer_long failed: {e}")
+    await show_screen(
+        message, LIST_TEXT, _list_kb(), edit=edit,
+        warn_prefix="Scenarios list edit failed",
+    )
 
 
 async def _scenario_full(callback: types.CallbackQuery) -> None:
@@ -176,7 +151,7 @@ async def _scenario_full(callback: types.CallbackQuery) -> None:
     text = SEPARATOR.join(
         _scenario_text(sid, with_html=False) for sid in _ordered_ids()
     )
-    await _safe_answer_long(callback.message, text)
+    await safe_answer_long(callback.message, text)
 
 
 # ============================================================
@@ -218,15 +193,9 @@ async def callback_scenario(callback: types.CallbackQuery):
         return
 
     _log_cb(callback, "scenario_view", sid)
-    text = _scenario_text(sid)
-    if len(text) <= EDIT_SAFE_LIMIT:
-        try:
-            await callback.message.edit_text(
-                text, reply_markup=_scenario_kb(sid), parse_mode="HTML"
-            )
-        except Exception as e:
-            system_logger.warning(f"Scenario view edit failed: {e}")
-            await _safe_answer_long(callback.message, text)
-    else:
-        await _safe_answer_long(callback.message, text)
+    await edit_or_send(
+        callback.message, _scenario_text(sid),
+        reply_markup=_scenario_kb(sid),
+        warn_prefix="Scenario view edit failed",
+    )
     await callback.answer()

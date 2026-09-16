@@ -1,0 +1,5 @@
+# Зависимости для разработки и тестов.
+# Установка: .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+-r requirements.txt
+pytest>=8.3
+pytest-asyncio>=1.0
