@@ -5,13 +5,16 @@ __pycache__/
 
 # Секреты
 .env
+fpv-ai-proxy/.dev.vars
 
-# Логи и runtime-данные бота
+# Логи и runtime-данные бота (живая БД менеджеров — НЕ коммитить и НЕ архивировать)
 *.log
 config/calc_history.json
-data/bot.db
-data/bot.db-shm
-data/bot.db-wal
+data/bot.db*
+data/backups/
+
+# Релизные архивы (deploy/make_release.py)
+dist/
 
 # Node (fpv-ai-proxy)
 node_modules/

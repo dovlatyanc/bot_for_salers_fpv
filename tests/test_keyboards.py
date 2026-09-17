@@ -1,7 +1,7 @@
 """Клавиатуры: раскладка ↔ MAIN_BUTTONS (регрессия «📊 История расчётов») и поиск АКБ."""
 
 from data import CAP_CLASSES, FILTER_LABELS, PLATFORMS, VOLTAGES
-from keyboards import MAIN_BUTTONS, _build_search_kb, main_kb
+from keyboards import MAIN_BUTTONS, MENU_EXIT_BUTTONS, _build_search_kb, main_kb
 from keyboards.keyboards import MAIN_KEYBOARD_LAYOUT
 
 
@@ -22,12 +22,20 @@ def test_main_kb_structure():
     rows = [[b.text for b in row] for row in main_kb.keyboard]
     assert rows == [list(row) for row in MAIN_KEYBOARD_LAYOUT]
     texts = [t for row in rows for t in row]
+    assert len(rows) == 2 and len(texts) == 8  # «📊 ТТХ» переехала в «Шпаргалки»
     for must in ("💰 Калькулятор", "📊 История расчётов", "📚 Шпаргалки"):
         assert must in texts, must
-    # справочные разделы собраны под «📚 Шпаргалки» (handlers/cheatsheets.py)
+    # справочные разделы и каталог «📊 ТТХ» собраны под «📚 Шпаргалки»
     for gone in ("🧠 Подбор", "🎯 Сценарии", "❓ FAQ", "💬 Возражения",
-                 "🛑 Стоп-лист", "📦 Памятка"):
+                 "🛑 Стоп-лист", "📦 Памятка", "📊 ТТХ"):
         assert gone not in texts, gone
+
+
+def test_legacy_ttx_still_counts_as_menu_button():
+    """«📊 ТТХ» убрана из меню (каталог — в «📚 Шпаргалки», cheat:ttx), но её текст
+    с закэшированной клавиатуры всё ещё ведёт к выходу из FSM-сценариев."""
+    assert "📊 ТТХ" not in MAIN_BUTTONS
+    assert "📊 ТТХ" in MENU_EXIT_BUTTONS
 
 
 def _flat(kb):

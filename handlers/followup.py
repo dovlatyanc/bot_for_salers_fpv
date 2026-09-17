@@ -53,7 +53,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from db import followups as followups_db, settings as settings_db
-from keyboards import MAIN_BUTTONS
+from keyboards import MENU_EXIT_BUTTONS
 
 router = Router(name="followup")
 
@@ -69,9 +69,9 @@ DONE_LIMIT = 10           # сколько выполненных показыв
 PRE_REMIND_MINUTES = (10, 5, 2)  # «за сколько минут» предупреждать (upcoming_loop)
 PRE_SCAN_SECONDS = 20            # период сканирования upcoming_loop, сек
 
-# Кнопки меню, по которым можно выйти из ввода напоминания (сама
-# «⏰ Напоминания» — перезапуск экрана, а не выход)
-MENU_BUTTONS = frozenset(MAIN_BUTTONS) - {FOLLOWUP_BUTTON}
+# Кнопки меню (+ легаси «📊 ТТХ»), по которым можно выйти из ввода напоминания
+# (сама «⏰ Напоминания» — перезапуск экрана, а не выход)
+MENU_BUTTONS = frozenset(MENU_EXIT_BUTTONS) - {FOLLOWUP_BUTTON}
 EXIT_WORDS = frozenset({"отмена", "cancel", "❌", "❌ отмена"})
 
 

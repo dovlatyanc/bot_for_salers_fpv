@@ -5,16 +5,16 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import bot, system_logger
-from keyboards import MAIN_BUTTONS
+from keyboards import MENU_EXIT_BUTTONS
 from states import BuildState
 
 router = Router()
 
 BUILD_BUTTON = "🔧 Своя сборка"
-# Кнопки меню, по которым можно выйти из ввода (сама «🔧 Своя сборка» —
-# перезапуск: её перехватывает start_build, зарегистрированный раньше FSM).
-# Зеркало MAIN_BUTTONS — тот же приём, что в calculator/faq/followup.
-MENU_BUTTONS = frozenset(MAIN_BUTTONS) - {BUILD_BUTTON}
+# Кнопки меню (+ легаси «📊 ТТХ»), по которым можно выйти из ввода (сама
+# «🔧 Своя сборка» — перезапуск: её перехватывает start_build, зарегистрированный
+# раньше FSM). Зеркало MENU_EXIT_BUTTONS — приём calculator/faq/followup.
+MENU_BUTTONS = frozenset(MENU_EXIT_BUTTONS) - {BUILD_BUTTON}
 EXIT_WORDS = frozenset({"отмена", "cancel", "❌", "❌ отмена"})
 
 

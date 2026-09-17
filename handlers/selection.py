@@ -26,7 +26,8 @@ def _sel_kb(rows):
 
 def _sel_step_a_kb():
     return _sel_kb([[("6S", "sel:a:6S"), ("8S", "sel:a:8S")],
-                    [("Не знаю", "sel:a:unknown")]])
+                    [("Не знаю", "sel:a:unknown")],
+                    [("⬅️ В шпаргалки", "cheat:menu")]])
 
 
 def _sel_step_b_kb():

@@ -7,8 +7,10 @@
   2) бот показывает полный прайс модели (закупка, розница, опт, НДС 5/22%) и
      предлагает закупочную цену из конфига одной кнопкой — либо свою;
   3) вводит цену продажи клиенту;
-  4) бот показывает маржу в рублях, маржу в %, рекомендацию по скидке и сверку
-     с прайсом (факт vs плановая маржа; между какими ступенями прайса цена).
+  4) бот показывает маржу в рублях, маржу в %, рекомендацию по скидке (скидка
+     не опускает цену ниже минимальной ступени прайса — «розницы», а цена
+     ниже неё запрещена вовсе) и сверку с прайсом (факт vs плановая маржа;
+     между какими ступенями прайса цена).
 
 Каждый завершённый расчёт сохраняется в SQLite (пакет db, таблица
 calc_entries) — кнопка «📊 История расчётов» показывает последние 5 расчётов
@@ -35,7 +37,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from db import calc_history as history_db, prices as prices_db
-from keyboards import MAIN_BUTTONS
+from keyboards import MENU_EXIT_BUTTONS
 
 router = Router(name="calculator")
 
@@ -45,15 +47,16 @@ system_logger = logging.getLogger("system")
 
 HISTORY_LIMIT = 5      # «последние 5 расчётов этого менеджера»
 DISCOUNT_SHARE = 0.30  # рекомендованный предел скидки — 30% от маржи
+SMART_TRADE_MIN = 2500  # «можно смело торговаться» — только при скидке не меньше этой суммы
 
 CALC_BUTTON = "💰 Калькулятор"
 HISTORY_BUTTON = "📊 История расчётов"
 
 # Кнопки главного меню — зеркало MAIN_BUTTONS из keyboards (без кнопок самого
 # калькулятора) — по ним можно выйти из FSM-сценария, не оставляя «зависшее»
-# состояние. Выводим из MAIN_BUTTONS (как в faq/followup/build), чтобы зеркало
+# состояние. Выводим из MENU_EXIT_BUTTONS (как в faq/followup/build), чтобы зеркало
 # не рассинхронизировалось при добавлении новых кнопок меню.
-MENU_BUTTONS = frozenset(MAIN_BUTTONS) - {CALC_BUTTON, HISTORY_BUTTON}
+MENU_BUTTONS = frozenset(MENU_EXIT_BUTTONS) - {CALC_BUTTON, HISTORY_BUTTON}
 # слова-выходы, принимаемые в шагах ввода цен (кроме /cancel — он ловится командой)
 EXIT_WORDS = frozenset({"отмена", "cancel", "❌", "❌ отмена"})
 
@@ -146,6 +149,14 @@ def _price_ladder(info: dict) -> str:
     return " · ".join(parts)
 
 
+def _sale_tiers(info: dict) -> list[tuple[str, float]]:
+    """Ступени прайса для продажи (без закупки), отсортированные по возрастанию цены."""
+    return sorted(
+        ((title, float(info[key])) for key, title in PRICE_FIELDS if key != "cost" and info.get(key)),
+        key=lambda t: t[1],
+    )
+
+
 def _price_review(price: float, margin: float, info: dict | None) -> str:
     """Блок «Сверка с прайсом» для экрана результата.
 
@@ -166,10 +177,7 @@ def _price_review(price: float, margin: float, info: dict | None) -> str:
             verdict = f"ниже плана на {_fmt_money(abs(delta))}"
         lines.append(f"💰 План по прайсу: маржа {_fmt_money(float(plan))}. "
                      f"Факт: {_fmt_money(margin)} ({verdict}).")
-    tiers = sorted(
-        ((title, float(info[key])) for key, title in PRICE_FIELDS if key != "cost" and info.get(key)),
-        key=lambda t: t[1],
-    )
+    tiers = _sale_tiers(info)
     if tiers:
         position = ""
         for i, (title, value) in enumerate(tiers):
@@ -278,29 +286,73 @@ async def _edit(callback: types.CallbackQuery, text: str, kb: types.InlineKeyboa
 # ============================================================
 # ТЕКСТЫ: РЕКОМЕНДАЦИЯ ПО СКИДКЕ, РЕЗУЛЬТАТ, ИСТОРИЯ
 # ============================================================
-def _discount_advice(cost: float, price: float, margin: float, margin_pct: float) -> str:
-    """Рекомендация по скидке: безопасный предел — 30% маржи, вниз до 100 ₽."""
+def _discount_advice(
+    cost: float, price: float, margin: float, margin_pct: float,
+    floor: tuple[str, float] | None = None,
+) -> str:
+    """Рекомендация по скидке: безопасный предел — 30% маржи, вниз до 100 ₽.
+
+    floor — минимальная ступень прайса (подпись, цена): скидка не может
+    опустить цену продажи ниже неё, а цена ниже ступени запрещена вовсе
+    (FIX: раньше предел считался только от маржи и советовал «торговаться»,
+    даже когда цена уже была ниже «розницы»).
+
+    Фраза «Запас по марже большой — можно смело торговаться» ставится только
+    при безопасной скидке от SMART_TRADE_MIN (FIX: запас 100 ₽ — не «большой
+    запас по марже», даже при маржинальности 40 %). Решение владельца
+    (17.09.2026): условие «цена от ступени НДС 5%» убрано.
+    """
     if margin <= 0:
         return ("🚨 Цена продажи не покрывает закупку — убыток "
                 f"{_fmt_money(abs(margin))}. Скидка исключена: поднимайте цену "
                 "или предлагайте другую конфигурацию.")
     max_discount = int(margin * DISCOUNT_SHARE // 100) * 100
+    cap_note = ""
+    if floor is not None:
+        floor_title, floor_value = floor
+        if price < floor_value:
+            return (f"🚨 Цена ниже минимальной ступени прайса «{floor_title}» "
+                    f"({_fmt_money(floor_value)}) — так продавать нельзя, и о скидках "
+                    f"речи быть не может. Поднимите цену минимум до {_fmt_money(floor_value)}.")
+        room = price - floor_value
+        if room < 100:
+            return (f"🔴 Цена практически на минимальной ступени прайса "
+                    f"«{floor_title}» ({_fmt_money(floor_value)}) — продавайте без скидки.")
+        floor_cap = int(room // 100) * 100
+        if floor_cap < max_discount:
+            max_discount = floor_cap
+            cap_note = (f" Лимит — ступень «{floor_title}» ({_fmt_money(floor_value)}): "
+                        "ниже опускаться нельзя.")
     disc_pct = max_discount / price * 100 if price else 0.0
-    if margin_pct >= 30:
+    # FIX: «можно смело торговаться» — только при реальном запасе: безопасная
+    # скидка от SMART_TRADE_MIN (ступень «НДС 5%» триггером не является);
+    # иначе — честное «Маржа достаточная» с той же суммой скидки
+    bold_trade = max_discount >= SMART_TRADE_MIN
+    if margin_pct >= 30 and bold_trade:
         return (f"✅ Запас по марже большой — можно смело торговаться. Безопасная скидка "
-                f"до <b>{_fmt_money(max_discount)}</b> (~{_fmt_pct(disc_pct)} от цены).")
+                f"до <b>{_fmt_money(max_discount)}</b> (~{_fmt_pct(disc_pct)} от цены).{cap_note}")
     if margin_pct >= 15:
         return (f"🟢 Маржа достаточная. Скидка — не больше <b>{_fmt_money(max_discount)}</b> "
                 f"(~{_fmt_pct(disc_pct)} от цены); если клиент торгуется, отрабатывайте "
-                "ценность: проверка сборки, сроки, гарантия.")
+                f"ценность: проверка сборки, сроки, гарантия.{cap_note}")
     if margin_pct >= 5:
         return (f"🟡 Маржа низкая. Максимум <b>{_fmt_money(max_discount)}</b> и только "
-                "за объём или быструю оплату — иначе продавайте по цене.")
+                f"за объём или быструю оплату — иначе продавайте по цене.{cap_note}")
     return "🔴 Маржи почти нет — продавайте без скидки."
 
 
 def _render_result(entry: dict, price_info: dict | None = None) -> str:
-    advice = _discount_advice(entry["cost"], entry["price"], entry["margin"], entry["margin_pct"])
+    # FIX: предел скидки согласован с прайсом — ниже минимальной ступени
+    # («розница») продавать нельзя, и скидка не опускает цену ниже неё;
+    # «можно смело торговаться» — только от 2 500 ₽ скидки
+    floor = None
+    if price_info:
+        tiers = _sale_tiers(price_info)
+        if tiers:
+            floor = tiers[0]
+    advice = _discount_advice(
+        entry["cost"], entry["price"], entry["margin"], entry["margin_pct"], floor,
+    )
     review = _price_review(float(entry["price"]), float(entry["margin"]), price_info)
     return (
         "🧮 <b>Расчёт готов</b>\n\n"

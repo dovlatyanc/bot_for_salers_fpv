@@ -19,15 +19,18 @@ async def test_button_objections_opens_list():
     text, kwargs = msg.answers[0]
     assert text == LIST_TEXT and kwargs.get("parse_mode") == "HTML"
     rows = kwargs["reply_markup"].inline_keyboard
-    assert len(rows) == len(OBJECTION_ORDER) + 1
-    assert rows[-1][0].callback_data == "obj:stop" and rows[-1][1].callback_data == "obj:full"
+    assert len(rows) == len(OBJECTION_ORDER) + 2  # возражения + «стоп/всё одним» + «назад»
+    assert rows[-2][0].callback_data == "obj:stop" and rows[-2][1].callback_data == "obj:full"
+    assert rows[-1][0].callback_data == "cheat:menu"  # «⬅️ В шпаргалки»
 
 
 def test_list_kb_marks_stop_items():
     """Точная проверка разметки: «🛑 » ставится только перед stop-возражениями
     (у двух не-стоп возражений свой emoji 🛑 — сравниваем полный текст кнопки)."""
     rows = _list_kb().inline_keyboard
-    assert len(rows) == len(OBJECTION_ORDER) + 1
+    assert len(rows) == len(OBJECTION_ORDER) + 2  # возражения + «стоп/всё одним» + «назад»
+    assert rows[-1][0].text == "⬅️ В шпаргалки"
+    assert rows[-1][0].callback_data == "cheat:menu"
     for row, oid in zip(rows, OBJECTION_ORDER):
         obj = OBJECTIONS[oid]
         prefix = "🛑 " if obj.get("stop") else ""

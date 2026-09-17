@@ -190,6 +190,30 @@ async def main():
     entry = {"model": "X", "cost": 100.0, "price": 150.0, "margin": 50.0, "margin_pct": 33.3}
     plain = calc._render_result(entry)
     assert "Сверка" not in plain and "33.3 %" in plain, plain
+    # 11b) FIX: скидка не советуется ниже минимальной ступени прайса
+    # и не опускает цену ниже неё (кейс: 6S4P, продажа 14 000 < розницы 15 500)
+    floor = ("розница", 15500.0)
+    below = calc._discount_advice(6300.0, 14000.0, 7700.0, 55.0, floor)
+    assert "нельзя" in below and "торговаться" not in below, below
+    assert "15 500 ₽" in below, below
+    capped = calc._discount_advice(6300.0, 15600.0, 9300.0, 59.6, floor)
+    assert "100 ₽" in capped and "15 500 ₽" in capped, capped
+    plain_adv = calc._discount_advice(6300.0, 14000.0, 7700.0, 55.0)
+    assert "2 300 ₽" in plain_adv and "торговаться" not in plain_adv, plain_adv
+    # 11c) FIX: «можно смело торговаться» — только от 2 500 ₽ скидки
+    # (ступень «НДС 5%» триггером не является — решение владельца)
+    small = calc._discount_advice(4800.0, 8000.0, 3200.0, 40.0, ("розница", 7900.0))
+    assert "торговаться" not in small and "100 ₽" in small, small
+    bold = calc._discount_advice(6300.0, 20000.0, 13700.0, 68.5, ("розница", 15500.0))
+    assert "можно смело торговаться" in bold and "4 100 ₽" in bold, bold
+    capped_vat = calc._discount_advice(6300.0, 17500.0, 11200.0, 64.0, ("розница", 15500.0))
+    assert "торговаться" not in capped_vat and "Маржа достаточная" in capped_vat, capped_vat
+    assert "2 000 ₽" in capped_vat and "15 500 ₽" in capped_vat, capped_vat
+    bad = calc._render_result(
+        {"model": "6S4P", "cost": 6300.0, "price": 14000.0, "margin": 7700.0, "margin_pct": 55.0},
+        {"cost": 6300.0, "cash": 15500.0, "profit": 9200.0},
+    )
+    assert "торговаться" not in bad and "ниже минимальной ступени" in bad, bad
     ok.append("pure-functions")
 
     print("OK:", ", ".join(ok))

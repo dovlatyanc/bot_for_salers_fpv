@@ -20,13 +20,15 @@ async def test_button_scenarios_opens_list_and_clears_state():
     text, kwargs = msg.answers[0]
     assert text == LIST_TEXT and kwargs.get("parse_mode") == "HTML"
     cbs = [cb for _, cb in kb_data(kwargs["reply_markup"])]
-    assert cbs == [f"scn:{sid}" for sid in SCENARIO_ORDER] + ["scn:full"]
+    assert cbs == [f"scn:{sid}" for sid in SCENARIO_ORDER] + ["scn:full", "cheat:menu"]
 
 
 def test_list_kb_layout():
     rows = _list_kb().inline_keyboard
-    assert len(rows) == len(SCENARIO_ORDER) + 1
-    assert rows[-1][0].text == "📄 Всё одним сообщением"
+    assert len(rows) == len(SCENARIO_ORDER) + 2  # разделы + «Всё одним» + «назад»
+    assert rows[-2][0].text == "📄 Всё одним сообщением"
+    assert rows[-1][0].text == "⬅️ В шпаргалки"
+    assert rows[-1][0].callback_data == "cheat:menu"
 
 
 @pytest.mark.parametrize("sid", SCENARIO_ORDER)

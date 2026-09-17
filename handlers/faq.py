@@ -27,7 +27,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from db import faq as faq_db
-from keyboards import MAIN_BUTTONS
+from keyboards import MENU_EXIT_BUTTONS
 
 router = Router(name="faq")
 
@@ -38,8 +38,9 @@ FAQ_BUTTON = "❓ FAQ"
 SEARCH_LIMIT = 10      # максимум вопросов в результатах поиска
 BTN_TEXT_LIMIT = 60    # обрезка текста вопроса в кнопке
 
-# Кнопки меню, по которым можно выйти из поиска (сама «❓ FAQ» — перезапуск)
-MENU_BUTTONS = frozenset(MAIN_BUTTONS) - {FAQ_BUTTON}
+# Кнопки меню (+ легаси «📊 ТТХ»), по которым можно выйти из поиска
+# (сама «❓ FAQ» — перезапуск)
+MENU_BUTTONS = frozenset(MENU_EXIT_BUTTONS) - {FAQ_BUTTON}
 EXIT_WORDS = frozenset({"отмена", "cancel", "❌", "❌ отмена"})
 
 
@@ -132,7 +133,9 @@ def _main_kb(categories: list[dict]) -> types.InlineKeyboardMarkup:
         callback_data=f"faq:c:{ci}")]
         for ci, cat in enumerate(categories)]
     rows.append([types.InlineKeyboardButton(text="🔎 Поиск по FAQ", callback_data="faq:search")])
-    rows.append([types.InlineKeyboardButton(text="❌ Закрыть", callback_data="faq:cancel")])
+    # «назад» — в меню разделов «📚 Шпаргалки» (cheat:menu); «❌ Закрыть» остаётся
+    rows.append([types.InlineKeyboardButton(text="⬅️ В шпаргалки", callback_data="cheat:menu"),
+                 types.InlineKeyboardButton(text="❌ Закрыть", callback_data="faq:cancel")])
     return types.InlineKeyboardMarkup(inline_keyboard=rows)
 
 

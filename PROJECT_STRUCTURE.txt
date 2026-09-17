@@ -1,0 +1,346 @@
+================================================================
+FPV SALES BOT — ЛОГИКА И СТРУКТУРА ПРОЕКТА
+================================================================
+Снимок: 17.09.2026, состояние после фикса навигации «📚 Шпаргалки»
+(роутер early_buttons + callback cheat:menu; pytest: 154 passed).
+
+1. НАЗНАЧЕНИЕ И СТЕК
+--------------------
+Telegram-бот для продавцов FPV-дронов и комплектующих. Умения:
+  • 💰 Калькулятор маржи — FSM-расчёт по прайсу, скидки/объёмы, история расчётов;
+  • Каталог АКБ — ряды 6S/8S, карточки моделей с фото (вход: «📊 ТТХ»-цепочка
+    и раздел «Каталог моделей» в «📚 Шпаргалках»);
+  • 🧠 Подбор — экспресс-подбор АКБ (дрон → разъём → ёмкость);
+  • 🔎 Поиск — мульти-фильтр по каталогу;
+  • 🔧 Своя сборка — FSM «конфигурация → разъём»;
+  • 🎯 Сценарии продаж, 💬 Возражения, ❓ FAQ (категории + поиск), стоп-лист,
+    памятка, /checklist;
+  • ⏰ Напоминания (follow-up) — CRUD личных дел, утренняя сводка в 9:00,
+    предварительные напоминания «за 10/5/2 минуты»;
+  • 🤖 AI-ассистент — fallback на любой текст, голосовые (распознавание),
+    оценка ответов 👍/👎, обратная связь админу.
+
+Стек: Python 3.14 · aiogram 3.13 (FSM в MemoryStorage) · SQLAlchemy 2 async +
+aiosqlite (SQLite data/bot.db; переход на PostgreSQL = DB_URL в .env) ·
+python-dotenv · aiohttp. AI: Cloudflare AI Worker или YandexGPT+SpeechKit —
+выбор через AI_PROVIDER в .env. fpv-ai-proxy — отдельный Node-проект
+(Cloudflare Worker) для проксирования AI и раздачи фото моделей.
+
+Запуск:  .venv\Scripts\python.exe bot.py   (из корня; в .env нужен BOT_TOKEN)
+Тесты:   .venv\Scripts\python.exe -m pytest -q   → 154 passed
+Проверки: .venv\Scripts\python.exe -X utf8 _verify_<имя>.py
+
+2. ДЕРЕВО ПРОЕКТА (без .venv/__pycache__/logs/node_modules)
+-----------------------------------------------------------
+bot.py                    точка входа: Dispatcher, порядок роутеров, main()
+config.py                 .env-переменные, логгеры, единственный экземпляр Bot
+logging_setup.py          логгеры system/dialog → bot_system.log, bot_dialogs.log
+pytest.ini, requirements*.txt, .env.example, .clinerules
+_verify_*.py              автономные смоук-проверки (раздел 14)
+_test_photo.py            вспомогательный скрипт (проверка отправки фото)
+
+ai/
+  ai.py                   фасад AI: ask_ai, handle_ai_request, feedback-кнопки
+
+data/
+  models.py               MODELS — каталог АКБ (ряды 6S/8S), CAP_CLASSES, FILTER_LABELS
+  scenarios.py            SCENARIOS + SCENARIO_ORDER — сценарии продаж
+  objections.py           OBJECTIONS + OBJECTION_ORDER — база возражений
+  faq.json, followups.json — legacy-сид для первичного переноса в БД
+  bot.db (+wal/shm)       SQLite-хранилище
+
+db/
+  engine.py               async-движок (DB_URL из .env или SQLite), прагмы WAL/FK
+  models.py               ORM: BotSetting, FollowUp, FollowUpReminder, CalcEntry,
+                          Price, FaqCategory, FaqQuestion
+  repositories.py         followups, calc_history, prices, faq, settings
+  seed.py                 идемпотентный перенос JSON → пустые таблицы
+
+handlers/                 13 роутеров aiogram 3 (раздел 6)
+keyboards/keyboards.py    клавиатуры: main_kb, ttx_rows_kb, callback_row и др.
+services/ai_providers/    base / cloudflare / yandex / factory / prompts
+states/states.py          FeedbackState, BuildState, SelectionState
+tests/                    conftest, fakes, fakes_http + 14 тест-файлов
+utils/
+  ui.py                   edit_or_send (умная правка сообщения), log_event (JSON)
+  utils.py                фильтрация каталога, форматирование прайса/ТТХ
+deploy/                   прод-комплект: fpvbot.service (systemd-юнит),
+                          backup_db.py (онлайн-бэкап БД перед деплоем/cron),
+                          make_release.py (релиз-архив БЕЗ .env и data/bot.db*),
+                          README.md (переезд с nohup на systemd + чек-лист деплоя)
+fpv-ai-proxy/             Node-проект: Cloudflare Worker (src/index.js, wrangler.toml);
+                          src/AKB_IMAGES/*.png — фото карточек моделей (6s/8s)
+
+3. СЛОИ И НАПРАВЛЕНИЕ ЗАВИСИМОСТЕЙ
+----------------------------------
+config ← data/states/keyboards/utils/ai/services ← handlers ← bot.py
+
+Зависимости строго в одну сторону, циклов нет:
+  • каждый модуль берёт общие ресурсы (bot, логгеры, env) только из config;
+  • каждый роутер объявляет свой Router и НЕ импортирует bot.py;
+  • хендлеры переиспользуют show-функции и тексты друг друга (например,
+    cheatsheets рендерит экраны через функции scenarios/faq/objections/selection).
+
+4. ТОЧКА ВХОДА bot.py — ПОРЯДОК РОУТЕРОВ И ЗАПУСК
+-------------------------------------------------
+Порядок include_router КРИТИЧЕН (aiogram отдаёт апдейт первому подходящему):
+  0) early_buttons — «ранние» кнопки «🤖 AI-ассистент» и «📚 Шпаргалки»:
+     открываются из любого FSM-сценария (нажатие сбрасывает сценарий и открывает
+     раздел; раньше кнопку «съедал» активный сценарий — «выход в меню»);
+  1) calculator — FSM-ввод не должен перехватываться fallback'ом AI;
+  2) menu — /start, callback model:<код> из сценариев обрабатывается здесь;
+  3) cheatsheets — «📚 Шпаргалки» (cheat:*) сразу после menu;
+  4) scenarios — после menu: кнопки «📦 Карточка <модель>» перехватывает menu;
+  5) followup — FSM ограничен FollowUpState, но до fallback;
+  6) faq — статические экраны + FSM поиска;
+  7) objections — статические экраны + стоп-лист;
+  8) selection / search / build / voice — прочие сценарии;
+  9) fallback — последним: любой нераспознанный текст → AI.
+
+main(): init_db() (движок+таблицы+сид, идемпотентно) → get_ai_provider()
+(fail-fast при неверном AI_PROVIDER) → фоновые задачи reminders_loop и
+upcoming_loop → бесконечный polling с авто-рестартом (backoff 5→60 сек);
+finally: отмена фоновых задач + close_db().
+
+5. КОНФИГУРАЦИЯ И ЛОГИРОВАНИЕ
+-----------------------------
+config.py: BOT_TOKEN, AI_PROXY_URL/AI_PROXY_TOKEN, AI_PROVIDER (cloudflare |
+yandex), YANDEX_* (ключи/папка/модель), ADMIN_ID, PROXY_URL, DB_URL.
+Без BOT_TOKEN — SystemExit. Bot создаётся один (с AiohttpSession(proxy), если
+PROXY_URL задан). От всех модулей требуется только импорт config.
+
+logging_setup.py: два файловых логгера — system (жизнь бота, БД, ошибки) и
+dialog (JSON-события действий пользователя: menu_open, scenarios_open,
+cheatsheet_open {user_id, name, ...} — удобно разбирать аналитикой).
+
+6. РОУТЕРЫ handlers/ (по модулям)
+---------------------------------
+early_buttons.py   «Ранние кнопки меню». Роутер с двумя message-хендлерами,
+                   регистрирующими РЕАЛЬНЫЕ реализации из других модулей:
+                   menu.button_ai_assistant («🤖 AI-ассистент») и
+                   cheatsheets.button_cheatsheets («📚 Шпаргалки»). Обе с
+                   state.clear() внутри → раздел открывается из любого
+                   сценария. Легаси-имя ai_button.py удалено; menu/cheatsheets
+                   сохраняют собственные регистрации как failsafe.
+
+calculator.py      «💰 Калькулятор», «📊 История расчётов», /cancel.
+                   FSM MarginState: choosing_model → waiting_for_cost →
+                   waiting_for_delivery → …; расчёт по прайсу из БД (Price),
+                   объёмные скидки, запись в calc_history.
+                   РЕШЕНО (17.09.2026): «можно смело торговаться» — только при
+                   безопасной скидке ≥ 2 500 ₽ (SMART_TRADE_MIN); условие по
+                   ступени «НДС 5%» убрано по решению владельца.
+
+menu.py            /start (main_kb), /help, /ai, /checklist, стоп-лист, памятка,
+                   обратная связь (FSM FeedbackState → админу), оценка AI
+                   (fb_good/fb_bad), легаси-цепочка ТТХ: row:<ряд> →
+                   model:<код> (карточка с фото); ttx_rows_kb/callback_row
+                   переиспользуются «Шпаргалками».
+
+cheatsheets.py     «📚 Шпаргалки» — inline-меню справочных разделов
+                   (CHEATSHEET_TEXT, _cheat_kb): Каталог моделей (cheat:ttx),
+                   Подбор (cheat:selection), Сценарии (cheat:scenarios),
+                   FAQ (cheat:faq), Возражения (cheat:objections),
+                   Стоп-лист (cheat:stoplist), Памятка (cheat:memo).
+                   Экраны разделов рендерятся функциями соответствующих
+                   роутеров; лог cheatsheet_open.
+
+scenarios.py       «🎯 Сценарии»: список (scn:list / кнопка меню), карточка
+                   сценария (scn:<id>), «Всё одним сообщением» (scn:full);
+                   «📦 Карточка модели» внутри сценария отдаётся menu (model:).
+
+followup.py        «⏰ Напоминания»: CRUD дел (fup:*), FSM FollowUpState
+                   (waiting_for_text), хранение в follow_ups.
+                   reminders_loop — утренняя сводка в DAILY_SEND_HOUR:00
+                   (🔴 просроченные + 🟡 на сегодня), защита от дублей ключом
+                   last_daily в settings. upcoming_loop — напоминания
+                   «за 10/5/2 минуты» до событий с due_at, журнал
+                   followup_reminders.
+
+faq.py             «❓ FAQ»: категории из БД (faq_categories/faq_questions),
+                   экраны категория → вопрос → ответ, поиск (faq:search → FSM
+                   FaqState.waiting_for_query), scoring-поиск по словам,
+                   «меню-зеркало» faq:menu, отмены, невалидные callback → alert.
+
+objections.py      «💬 Возражения»: список (obj:list), карточки (obj:<id>),
+                   «🛑 Только стоп-лист» (obj:stop), «Всё одним» (obj:full).
+
+selection.py       «🧠 Подбор» (экспресс-подбор АКБ): FSM SelectionState,
+                   шаги sel:a (тип АКБ 6S/8S/не знаю) → sel:b (разъём) →
+                   sel:c (ёмкость) → sel:drone → sel:frame; sel:restart —
+                   заново с шага А; в конце — подходящие модели.
+
+search.py          «🔎 Поиск»: мульти-фильтр по каталогу (srch:* — выбор
+                   фильтров, srchm:* — множественный выбор значений),
+                   результаты — карточки моделей.
+
+build.py           «🔧 Своя сборка»: FSM BuildState (waiting_for_config →
+                   waiting_for_connector), build_conn:* — выбор разъёма.
+
+voice.py           Голосовые сообщения: voice → AI-прокси (распознавание) →
+                   текст обрабатывается как вопрос.
+
+fallback.py        Последний роутер: текст не из кнопок → AI (handle_ai_request
+                   из ai/ai.py); неизвестные /команды — молча; прочий контент —
+                   подсказка «понимаю текст и голосовые».
+
+7. FSM-СОСТОЯНИЯ
+----------------
+states/states.py (общие): FeedbackState (обратная связь), BuildState
+(конфигурация, разъём), SelectionState (step_a…step_frame).
+Локальные в роутерах: MarginState (calculator.py: выбор модели → закупочная
+цена → доставка → …), FaqState (faq.py: ввод поискового запроса),
+FollowUpState (followup.py: текст напоминания).
+Паттерн «ранних кнопок»: меню-кнопки зарегистрированы РАНЬШЕ сценариев и
+сами сбрасывают state — сценарий не может «съесть» нажатие.
+
+8. НАВИГАЦИЯ «ШПАРГАЛОК» (фикс 17.09.2026)
+------------------------------------------
+Меню разделов = CHEATSHEET_TEXT + 7 кнопок. Входы: reply «📚 Шпаргалки»
+(early_buttons — из любого сценария) и cheat:menu с экранов разделов.
+
+Схема возвратов — каждый экран раздела заканчивается «⬅️ В шпаргалки»
+(cheat:menu), из меню разделов «⬅️ В меню» (cheat:back) ведёт в главное меню:
+  • Каталог моделей (cheat:ttx / легаси «📊 ТТХ»): «⬅️ В шпаргалки»;
+    список моделей ряда → «⬅️ К рядам» (cheat:ttx);
+  • Подбор, шаг А (sel:a / легаси «🧠 Подбор»): «⬅️ В шпаргалки»;
+    шаги глубже → sel:restart на шаг А;
+  • Сценарии: «⬅️ В шпаргалки» (после «Всё одним сообщением»);
+  • FAQ: «⬅️ В шпаргалки» в одном ряду с «❌ Закрыть»;
+  • Возражения: «⬅️ В шпаргалки» (после «стоп-лист / всё одним»);
+  • Стоп-лист и памятка (статические тексты): «⬅️ В шпаргалки» (_back_kb) —
+    раньше они сразу выпадали в главное меню, минуя меню разделов.
+
+Технически: cheat:menu и статические экраны показываются через
+utils.ui.edit_or_send — edit_text, а при невозможности правки новое
+сообщение (карточки моделей содержат фото, там edit_text падает);
+в конце callback.answer(). Свои регистрации в menu/cheatsheets оставлены
+как failsafe на случай съедания кнопки будущими сценариями.
+
+9. ДАННЫЕ data/
+---------------
+models.py     MODELS — словарь карточек АКБ: код → ТТХ (ёмкость, вес, разъём,
+              ток, цена), фото; два ряда: 6S (XT60, 22,2 В) и 8S; конфигурации
+              2p…8p (8000…32000 мАч). CAP_CLASSES (light/standard/long) и
+              FILTER_LABELS — справочники для поиска/подбора.
+scenarios.py  SCENARIOS + SCENARIO_ORDER — сценарии продаж (пошаговые
+              скрипты разговора с клиентом).
+objections.py OBJECTIONS + OBJECTION_ORDER — возражения клиентов с ответами.
+faq.json, followups.json — legacy-источники для db.seed (первичный перенос
+              в таблицы, выполняется один раз, идемпотентно).
+bot.db        SQLite (WAL): основное хранилище во время работы.
+
+10. БАЗА ДАННЫХ db/
+-------------------
+engine.py: DB_URL из .env, иначе SQLite data/bot.db; прод-вариант — БД вне
+папки кода (DB_URL=sqlite:////root/fpvbot_data/bot.db): движок сам создаёт
+родительский каталог и логирует путь («DB file: …»); прагмы на соединение —
+WAL, foreign_keys, busy_timeout; init_engine/ensure_engine/get_sessionmaker/
+close_engine; init_db() (в db/__init__) — движок + таблицы + seed_from_json.
+models.py (ORM): BotSetting (KV-настройки, напр. last_daily), FollowUp
+(напоминания), FollowUpReminder (журнал «за N минут»), CalcEntry (история
+расчётов), Price (прайс калькулятора), FaqCategory, FaqQuestion.
+repositories.py: followups, calc_history, prices, faq, settings — фасады
+в формате «как в старом JSON», чтобы хендлеры не знали про ORM.
+Итоговые таблицы: settings, follow_ups, followup_reminders, calc_history,
+prices, faq_categories, faq_questions.
+
+11. КЛАВИАТУРЫ И УТИЛИТЫ
+------------------------
+keyboards/keyboards.py: main_kb — reply-меню 2×4: («🔎 Поиск», «💰 Калькулятор»,
+«🔧 Своя сборка», «📚 Шпаргалки») / («🤖 AI-ассистент», «📝 Обратная связь»,
+«⏰ Напоминания», «📊 История расчётов»). Каталог и справочные разделы в меню
+НЕ перечислены — переехали в «📚 Шпаргалки»; MAIN_BUTTONS / LEGACY_MAIN_BUTTONS
+(«📊 ТТХ», для закэшированных клавиатур) / MENU_EXIT_BUTTONS — множества для
+«зеркал» выхода из FSM. ttx_rows_kb («Выберите ряд» + «⬅️ В шпаргалки»),
+callback_row (модели ряда + «⬅️ К рядам»), _build_search_kb (мульти-фильтр
+srch:v/d/c) и др.
+utils/ui.py: edit_or_send(message, text, reply_markup=..., warn_prefix=...) —
+умная правка сообщения с fallback на новое; log_event(user_id, event, payload)
+— JSON-строка в dialog-лог.
+utils/utils.py: фильтрация MODELS по фильтрам поиска/подбора, форматирование
+прайса и ТТХ.
+
+12. AI-СЛОЙ
+-----------
+ai/ai.py (фасад):
+  ask_ai(question)             — ответ через провайдера из .env (AI_PROVIDER);
+  handle_ai_request(msg, text) — «⏳ Запрашиваю AI-ассистента…» → ответ →
+  answer_ai_with_feedback(...) — ответ + inline 👍/👎 (fb_good/fb_bad
+                                 обрабатываются в menu.py, пишутся в лог).
+
+services/ai_providers/:
+  base.py      интерфейс провайдера (name, is_configured, ответ/транскрибация);
+  cloudflare.py Cloudflare AI Worker (AI_PROXY_URL + AI_PROXY_TOKEN);
+  yandex.py    YandexGPT + SpeechKit (YANDEX_API_KEY/IAM_TOKEN/FOLDER_ID/MODEL);
+  factory.py   get_ai_provider() по AI_PROVIDER; fail-fast в bot.main();
+  prompts.py   системный промпт «продавец FPV».
+
+fpv-ai-proxy/ (отдельный Node-проект, деплой через wrangler):
+  src/index.js        Worker: прокси к AI + раздача фото карточек;
+  src/AKB_IMAGES/*.png фото моделей (6s2p_8000.png … 8s8p_32000.png);
+  wrangler.toml, package.json.
+
+13. СИСТЕМА НАПОМИНАНИЙ (follow-up)
+-----------------------------------
+followup.py, запускается из bot.main() после init_db():
+  reminders_loop(bot) — скан follow_ups; в DAILY_SEND_HOUR:00 утренняя сводка:
+                        🔴 просроченные + 🟡 на сегодня; повтор в тот же день
+                        блокируется ключом last_daily в таблице settings;
+  upcoming_loop(bot)  — предварительные напоминания «за 10/5/2 минуты» до дел
+                        с точным due_at; каждая отправка фиксируется в журнале
+                        followup_reminders (защита от дублей);
+  finally в main(): задачи cancel() + close_db().
+
+14. ТЕСТЫ И VERIFY-СКРИПТЫ
+--------------------------
+tests/ (pytest, 154 passed):
+  conftest.py    окружение: файловая SQLite в tmp_path на каждый тест,
+                 изоляция от реального .env;
+  fakes.py       FakeMsg / FakeCb / FakeState / kb_data — без реального Telegram;
+  fakes_http.py  подмена HTTP для AI-провайдеров;
+  test_calculator.py               FSM-расчёт, скидки, история;
+  test_db_engine.py                формы sqlite-URL, авто-создание каталога БД;
+  test_handlers_cheatsheets.py     cheat:*-меню, каталог, «назад» (в т.ч. новые
+                                   тесты cheat:menu и единой кнопки возврата);
+  test_handlers_faq.py             категории/поиск/навигация FAQ;
+  test_handlers_followup.py        CRUD напоминаний, FSM;
+  test_handlers_objections.py      возражения + раскладка списка;
+  test_handlers_scenarios.py       сценарии + раскладка списка;
+  test_ai_providers.py             фабрика и провайдеры (fakes_http);
+  test_data_models/objections/scenarios.py — целостность справочников;
+  test_keyboards.py                клавиатуры;
+  test_utils_ui.py                 edit_or_send / log_event;
+  test_verify_all.py               интеграционные: сборка bot.py, порядок
+                                   роутеров (EXPECTED_ROUTER_NAMES, early_buttons
+                                   первый), запуск _verify_* скриптов как import.
+
+Verify-скрипты (автономные смоук-проверки; запуск: python -X utf8 _verify_X.py):
+  _verify_calc.py          калькулятор end-to-end;
+  _verify_followup.py      напоминания и фоновые циклы;
+  _verify_scenarios.py     цепочки scn:*;
+  _verify_flow.py          сценарий Подбора А→Б→В + раскладки;
+  _verify_faq.py           12 блоков FAQ (поиск, exits, menu-mirror);
+  _verify_build_menu.py    сборка бота: роутеры, меню, early_buttons (блок 8);
+  _verify_ai_providers.py  выбор провайдера;
+  _verify_sel.py           подбор (ранние проверки).
+
+15. ОТКРЫТЫЕ ВОПРОСЫ / ТЕКУЩИЙ ДОЛГ
+-----------------------------------
+  • НДС-условие в _discount_advice снято (решение владельца, 17.09.2026):
+    фраза «можно смело торговаться» — только при безопасной скидке ≥ 2 500 ₽
+    (SMART_TRADE_MIN); цена на ступени «НДС 5%» триггером больше не является;
+  • легаси «📊 ТТХ»: хендлер сохранён (LEGACY_MAIN_BUTTONS) ради
+    закэшированных reply-клавиатур у пользователей — удалять нельзя;
+  • fpv-ai-proxy/node_modules лежит рядом с исходниками — шум в поиске
+    по дереву (исключать через .gitignore/фильтры при обходах);
+  • деплой-комплект создан (deploy/: systemd-юнит, backup_db.py, make_release.py,
+    README.md) — ОСТАЛОСЬ выполнить активацию на сервере по deploy/README.md:
+    pkill -INT nohup-процесса → юнит в /etc/systemd/system → enable --now;
+    по желанию — переезд БД в /root/fpvbot_data (DB_URL в .env).
+
+Снимок актуален на 17.09.2026: фикс навигации «📚 Шпаргалки» завершён
+(early_buttons первым роутером + cheat:menu + кнопки «⬅️ В шпаргалки» на всех
+экранах разделов), НДС-условие в калькуляторе снято (порог только 2 500 ₽),
+прод-гигиена: deploy-комплект + .gitignore/архив без БД + бэкап перед деплоем,
+pytest 154 passed, все _verify_* зелёные.

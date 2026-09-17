@@ -3,11 +3,12 @@
 import handlers.cheatsheets as cheats
 from handlers.cheatsheets import (
     CHEATSHEET_BUTTON, CHEATSHEET_TEXT, button_cheatsheets, callback_cheat_back,
-    callback_cheat_faq, callback_cheat_memo, callback_cheat_objections,
-    callback_cheat_scenarios, callback_cheat_selection, callback_cheat_stoplist,
+    callback_cheat_faq, callback_cheat_memo, callback_cheat_menu,
+    callback_cheat_objections, callback_cheat_scenarios, callback_cheat_selection,
+    callback_cheat_stoplist, callback_cheat_ttx,
 )
 from handlers.faq import FaqState
-from handlers.menu import MEMO_TEXT, STOPLIST_TEXT
+from handlers.menu import MEMO_TEXT, STOPLIST_TEXT, callback_row, ttx_rows_kb
 from handlers.selection import SEL_STEP_A_TEXT, _sel_step_a_kb, callback_selection
 from keyboards import MAIN_BUTTONS, main_kb
 from states import SelectionState
@@ -23,7 +24,7 @@ def test_cheatsheets_button_in_main_menu():
     kb_texts = [b.text for row in main_kb.keyboard for b in row]
     assert CHEATSHEET_BUTTON in kb_texts
     for gone in ("🧠 Подбор", "🎯 Сценарии", "❓ FAQ", "💬 Возражения",
-                 "🛑 Стоп-лист", "📦 Памятка"):
+                 "🛑 Стоп-лист", "📦 Памятка", "📊 ТТХ"):
         assert gone not in kb_texts, gone
 
 
@@ -37,9 +38,10 @@ async def test_button_opens_inline_menu_and_clears_fsm():
     assert text == CHEATSHEET_TEXT
     assert kwargs.get("parse_mode") == "HTML"
     assert [cb for _, cb in kb_data(kwargs["reply_markup"])] == [
-        "cheat:selection", "cheat:scenarios",
-        "cheat:faq", "cheat:objections",
-        "cheat:stoplist", "cheat:memo",
+        "cheat:ttx", "cheat:selection",
+        "cheat:scenarios", "cheat:faq",
+        "cheat:objections", "cheat:stoplist",
+        "cheat:memo",
         "cheat:back",
     ]
 
@@ -110,7 +112,7 @@ async def test_cheat_stoplist_and_memo_reuse_menu_texts():
         edit_text, edit_kwargs = cb.message.edits[0]
         assert edit_text == text
         assert edit_kwargs.get("parse_mode") == "HTML"
-        assert ("⬅️ В меню", "cheat:back") in kb_data(edit_kwargs["reply_markup"])
+        assert ("⬅️ В шпаргалки", "cheat:menu") in kb_data(edit_kwargs["reply_markup"])
         assert cb.alerts == [(None, False)]
 
 
@@ -127,3 +129,69 @@ async def test_unknown_cheat_callback_alerts():
     cb = FakeCb("cheat:nope")
     await cheats.callback_cheat_unknown(cb)
     assert cb.alerts == [("Раздел не найден", True)]
+
+
+# ---------- «назад» с экранов разделов (cheat:menu) ----------
+
+async def test_cheat_menu_callback_renders_section_menu():
+    """cheat:menu — то же inline-меню, что по reply-кнопке «📚 Шпаргалки»,
+    показывается правкой сообщения (edit_or_send)."""
+    cb = FakeCb("cheat:menu")
+    await callback_cheat_menu(cb)
+    text, kwargs = cb.message.edits[0]
+    assert text == CHEATSHEET_TEXT
+    assert kwargs.get("parse_mode") == "HTML"
+    assert [cb_data for _, cb_data in kb_data(kwargs["reply_markup"])] == [
+        "cheat:ttx", "cheat:selection",
+        "cheat:scenarios", "cheat:faq",
+        "cheat:objections", "cheat:stoplist",
+        "cheat:memo",
+        "cheat:back",
+    ]
+    assert cb.alerts == [(None, False)]
+
+
+def test_section_screens_have_back_button():
+    """Единая навигация «экран → меню разделов → главное меню»: с каждого экрана
+    раздела есть «⬅️ В шпаргалки» (cheat:menu) — каталог, подбор, сценарии,
+    возражения, FAQ; стоп-лист/памятка проверены в тесте выше."""
+    from handlers.faq import _main_kb as faq_main_kb
+    from handlers.objections import _list_kb as objections_list_kb
+    from handlers.scenarios import _list_kb as scenarios_list_kb
+
+    kbs = [
+        ttx_rows_kb(),                     # «Выберите ряд» (cheat:ttx / легаси «📊 ТТХ»)
+        scenarios_list_kb(),               # cheat:scenarios / scn:list
+        objections_list_kb(),              # cheat:objections / obj:list
+        faq_main_kb([{"name": "Категория", "questions": [{"q": "вопрос", "a": "ответ"}]}]),
+        _sel_step_a_kb(),                  # cheat:selection / легаси «🧠 Подбор»
+    ]
+    for kb in kbs:
+        assert ("⬅️ В шпаргалки", "cheat:menu") in kb_data(kb), kb
+
+
+# ---------- каталог моделей (экс-«📊 ТТХ») ----------
+
+async def test_cheat_ttx_opens_row_catalog():
+    """📊 Каталог моделей — экран бывшей кнопки «📊 ТТХ»: выбор ряда → row:*."""
+    cb = FakeCb("cheat:ttx")
+    await callback_cheat_ttx(cb)
+    text, kwargs = cb.message.edits[0]
+    assert text == "Выберите ряд:"
+    assert kb_data(kwargs["reply_markup"]) == [
+        ("6S", "row:6S"), ("8S", "row:8S"),
+        ("⬅️ В шпаргалки", "cheat:menu"),
+    ]
+    assert cb.alerts == [(None, False)]
+
+
+async def test_ttx_row_callback_lists_models():
+    """Цепочка после cheat:ttx не сломана: row:6S → список моделей ряда + «назад»."""
+    cb = FakeCb("row:6S")
+    await callback_row(cb)
+    text, kwargs = cb.message.edits[0]
+    assert text == "Модели ряда 6S:"
+    buttons = kb_data(kwargs["reply_markup"])
+    codes = [cb_data for _, cb_data in buttons[:-1]]
+    assert codes and all(c.startswith("model:") for c in codes), codes
+    assert buttons[-1] == ("⬅️ К рядам", "cheat:ttx")  # назад к «Выберите ряд»

@@ -29,6 +29,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import bot, system_logger
 from db import close_db, init_db
+from handlers.early_buttons import router as early_buttons_router
 from handlers.build import router as build_router
 from handlers.calculator import router as calculator_router
 from handlers.cheatsheets import router as cheatsheets_router
@@ -46,6 +47,10 @@ from services.ai_providers import get_ai_provider
 dp = Dispatcher(storage=MemoryStorage())
 
 # Порядок регистрации роутеров:
+#   0) early_buttons — кнопки «🤖 AI-ассистент» и «📚 Шпаргалки» открываются из
+#      любого сценария: нажатие завершает активный FSM и сразу открывает раздел
+#      (раньше кнопку съедал сценарий — калькулятор отвечал «расчёт закрыт»,
+#      а раздел не открывался);
 #   1) calculator — FSM-ввод не должен перехватываться fallback'ом AI;
 #   2) menu — callback "model:<код>" из сценариев обрабатывается здесь;
 #   3) cheatsheets — «📚 Шпаргалки» (cheat:*): сразу после menu, до fallback;
@@ -55,6 +60,7 @@ dp = Dispatcher(storage=MemoryStorage())
 #   7) objections — статические экраны + стоп-лист; до fallback;
 #   8) selection / search / build / voice — прочие сценарии;
 #   9) fallback — последним: догоняет всё, что не распознано выше.
+dp.include_router(early_buttons_router)
 dp.include_router(calculator_router)
 dp.include_router(menu_router)
 dp.include_router(cheatsheets_router)

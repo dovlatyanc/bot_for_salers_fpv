@@ -1,0 +1,38 @@
+# ============================================================
+# FPV Sales Bot — systemd-юнит (эталонная копия из репозитория).
+# Активация на сервере (подробности в deploy/README.md):
+#   cp deploy/fpvbot.service /etc/systemd/system/fpvbot.service
+#   (проверьте User/WorkingDirectory/ExecStart под своё размещение)
+#   systemctl daemon-reload
+#   systemctl enable --now fpvbot
+# ============================================================
+[Unit]
+Description=FPV Sales Bot (aiogram polling)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# Если бот работает не от root — поменяйте User и выдайте права:
+#   chown -R fpvbot:fpvbot /root/fpvbot /root/fpvbot_data
+User=root
+WorkingDirectory=/root/fpvbot
+ExecStart=/root/fpvbot/.venv/bin/python bot.py
+
+# Автоподъём после падения и ребута — второй контур безопасности
+# (внутри bot.py polling уже рестартуется с backoff 5→60 c):
+Restart=always
+RestartSec=5
+
+# SIGINT вместо дефолтного SIGTERM: asyncio.run() проходит через finally
+# в bot.main() (отмена reminders/upcoming + close_db), а не убивает процесс.
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+# .env читает python-dotenv из WorkingDirectory — EnvironmentFile не нужен.
+# Логи: journalctl -u fpvbot -f (плюс файловые bot_system.log/bot_dialogs.log
+# в WorkingDirectory).
+SyslogIdentifier=fpvbot
+
+[Install]
+WantedBy=multi-user.target

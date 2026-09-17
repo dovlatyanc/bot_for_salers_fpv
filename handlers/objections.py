@@ -114,6 +114,8 @@ def _list_kb() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🛑 Только стоп-лист", callback_data="obj:stop"),
         InlineKeyboardButton(text="📄 Всё одним", callback_data="obj:full"),
     ])
+    # «назад» — в меню разделов «📚 Шпаргалки» (cheat:menu, handlers/cheatsheets.py)
+    rows.append([InlineKeyboardButton(text="⬅️ В шпаргалки", callback_data="cheat:menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

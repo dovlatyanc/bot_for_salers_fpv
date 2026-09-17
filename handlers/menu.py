@@ -2,7 +2,10 @@
 Модуль главного меню (вынесено из bot.py без изменения логики и текстов):
   /start, /help            — приветствие с описанием кнопок;
   /ai <вопрос>             — вопрос AI-ассистенту командой;
-  «📊 ТТХ»                 — выбор ряда (row:) и карточки моделей (model:);
+  «📊 ТТХ» (легаси)        — выбор ряда (row:) и карточки моделей (model:);
+                            кнопка убрана из меню — каталог переехал в
+                            «📚 Шпаргалки» (cheat:ttx), хендлер оставлен для
+                            закэшированных клавиатур;
   /checklist               — старый статический чек-лист подбора;
   «🛑 Стоп-лист», «📦 Памятка» — статические экраны стандарта продаж (тексты —
                            константы STOPLIST_TEXT / MEMO_TEXT: их же показывает
@@ -24,7 +27,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from ai import handle_ai_request
 from config import ADMIN_ID, bot, dialog_logger, system_logger
-from keyboards import MAIN_BUTTONS, main_kb
+from keyboards import MENU_EXIT_BUTTONS, main_kb
 from states import FeedbackState
 from utils import get_row, models_by_row, send_model_card
 
@@ -39,11 +42,10 @@ async def cmd_start(message: types.Message):
 Я помогаю менеджеру быстро находить ТТХ и ответы по стандарту продаж.
 
 <b>Кнопки:</b>
-📊 ТТХ — характеристики моделей
-🔎 Поиск — подбор АКБ по фильтрам
+🔎 Поиск — каталог АКБ: фильтры и карточки моделей
 💰 Калькулятор — маржа и рекомендация по скидке
 🔧 Своя сборка — расчёт нестандартной конфигурации
-📚 Шпаргалки — подбор, сценарии, FAQ, возражения, стоп-лист, памятка
+📚 Шпаргалки — каталог моделей, подбор, сценарии, FAQ, возражения, стоп-лист, памятка
 🤖 AI-ассистент — вопрос по клиенту или возражению
 📝 Обратная связь — написать администратору
 ⏰ Напоминания — дела по клиентам: сроки и звонки
@@ -65,21 +67,37 @@ async def cmd_ai(message: types.Message):
         return
     await handle_ai_request(message, args[1].strip())
 
-@router.message(F.text == "📊 ТТХ")
-async def button_ttx(message: types.Message, state: FSMContext):
-    # любая кнопка меню — выход из активного FSM-сценария; иначе «зависшее»
-    # состояние (например, ввод конфигурации «Своя сборка») перехватывало
-    # бы следующие тексты пользователя
-    await state.clear()
-    kb = InlineKeyboardMarkup(
+# Экран «Выберите ряд» общий для легаси-кнопки «📊 ТТХ» и раздела
+# «📊 Каталог моделей» в «📚 Шпаргалках» (cheat:ttx в handlers/cheatsheets.py).
+TTX_SELECT_ROW_TEXT = "Выберите ряд:"
+
+
+def ttx_rows_kb() -> InlineKeyboardMarkup:
+    """Каталог моделей: выбор ряда (row:) → список моделей ряда (model:).
+
+    «⬅️ В шпаргалки» (cheat:menu) — возврат в inline-меню разделов
+    (handlers/cheatsheets.py): callback-кнопки работают и с легаси-входа
+    «📊 ТТХ», и из «📚 Шпаргалки» (cheat:ttx)."""
+    return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="6S", callback_data="row:6S"),
                 InlineKeyboardButton(text="8S", callback_data="row:8S"),
-            ]
+            ],
+            [InlineKeyboardButton(text="⬅️ В шпаргалки", callback_data="cheat:menu")],
         ]
     )
-    await message.answer("Выберите ряд:", reply_markup=kb)
+
+
+@router.message(F.text == "📊 ТТХ")
+async def button_ttx(message: types.Message, state: FSMContext):
+    # ЛЕГАСИ: кнопки «📊 ТТХ» больше нет в меню (каталог — в «📚 Шпаргалки»,
+    # cheat:ttx), но хендлер оставлен для закэшированных клавиатур.
+    # Любая кнопка меню — выход из активного FSM-сценария; иначе «зависшее»
+    # состояние (например, ввод конфигурации «Своя сборка») перехватывало
+    # бы следующие тексты пользователя
+    await state.clear()
+    await message.answer(TTX_SELECT_ROW_TEXT, reply_markup=ttx_rows_kb())
 
 # NEW: старый статический чек-лист сохранён по команде /checklist
 @router.message(Command("checklist"))
@@ -156,6 +174,11 @@ async def button_memo(message: types.Message, state: FSMContext):
 # ============================================================
 # AI-АССИСТЕНТ (кнопка меню)
 # ============================================================
+# ВАЖНО: этот же хендлер зарегистрирован в handlers/early_buttons.py на роутере,
+# который bot.py включает РАНЬШЕ FSM-сценариев, — иначе кнопку во время
+# калькулятора/сборки/FAQ перехватывает активный сценарий как «выход в меню»
+# и приглашение AI не показывается. Регистрация здесь — failsafe на случай
+# изменения порядка роутеров: реализация одна, поведение любое из двух.
 @router.message(F.text == "🤖 AI-ассистент")
 async def button_ai_assistant(message: types.Message, state: FSMContext):
     # Раньше эта кнопка не обрабатывалась вовсе: fallback пропускает тексты из
@@ -198,7 +221,7 @@ async def process_feedback(message: types.Message, state: FSMContext):
         # повторная кнопка — перезапуск сценария (хендлер зарегистрирован выше)
         await start_feedback(message, state)
         return
-    if raw in MAIN_BUTTONS or raw.lower() in FEEDBACK_EXIT_WORDS:
+    if raw in MENU_EXIT_BUTTONS or raw.lower() in FEEDBACK_EXIT_WORDS:
         # кнопка меню или «отмена» во время ввода — чистый выход;
         # раньше текст кнопки уходил администратору как «отзыв»
         await state.clear()
@@ -242,6 +265,9 @@ async def callback_row(callback: types.CallbackQuery):
         [InlineKeyboardButton(text=code, callback_data=f"model:{code}")]
         for code in models_by_row(row)
     ]
+    # «назад» по цепочке каталога: список ряда → выбор ряда (cheat:ttx правит
+    # сообщение обратно на экран «Выберите ряд»)
+    buttons.append([InlineKeyboardButton(text="⬅️ К рядам", callback_data="cheat:ttx")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     await callback.message.edit_text(f"Модели ряда {row}:", reply_markup=kb)
     await callback.answer()

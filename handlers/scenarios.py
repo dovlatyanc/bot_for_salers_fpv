@@ -111,6 +111,8 @@ def _list_kb() -> InlineKeyboardMarkup:
             callback_data=f"scn:{sid}",
         )])
     rows.append([InlineKeyboardButton(text="📄 Всё одним сообщением", callback_data="scn:full")])
+    # «назад» — в меню разделов «📚 Шпаргалки» (cheat:menu, handlers/cheatsheets.py)
+    rows.append([InlineKeyboardButton(text="⬅️ В шпаргалки", callback_data="cheat:menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

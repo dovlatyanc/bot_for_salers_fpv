@@ -41,7 +41,7 @@ async def main():
     print("[OK] «AI-ассистент» во время ввода конфигурации -> чистый выход из FSM")
 
     # 2) другие кнопки меню и «отмена» во время ввода конфигурации
-    for text in ("📚 Шпаргалки", "🔎 Поиск", "💰 Калькулятор", "отмена"):
+    for text in ("📚 Шпаргалки", "📊 ТТХ", "🔎 Поиск", "💰 Калькулятор", "отмена"):
         ctx = await new_ctx()
         await ctx.set_state(BuildState.waiting_for_config)
         msg = Msg(text)
@@ -91,6 +91,19 @@ async def main():
     assert await ctx.get_state() is None
     assert any("AI-ассистент" in t and "Напишите" in t for t in msg.sent), msg.sent
     print("[OK] хендлер кнопки «AI-ассистент» -> чистит FSM и просит написать вопрос")
+
+    # 8) FIX «странного поведения»: роутер early_buttons стоит в bot.dp раньше
+    #    FSM-сценариев и регистрирует те же реализации — «🤖 AI-ассистент» и
+    #    «📚 Шпаргалки» открываются прямо из сценария, а не съедаются как
+    #    «выход в меню» (калькулятор: «Калькулятор закрыт» без раздела)
+    import bot as bot_mod
+    from handlers import cheatsheets, early_buttons
+    subs = bot_mod.dp.sub_routers
+    assert subs[0] is early_buttons.router, [getattr(r, "name", None) for r in subs]
+    callbacks = [h.callback for h in early_buttons.router.message.handlers]
+    assert menu.button_ai_assistant in callbacks, callbacks
+    assert cheatsheets.button_cheatsheets in callbacks, callbacks
+    print("[OK] early_buttons: «🤖 AI-ассистент» и «📚 Шпаргалки» раньше FSM-сценариев")
 
 
 asyncio.run(main())
