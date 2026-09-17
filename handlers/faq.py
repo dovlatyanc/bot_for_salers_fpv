@@ -11,30 +11,28 @@
                           ранжирование: вопрос ×2, ответ ×1);
   faq:menu / faq:cancel — к категориям / закрыть.
 
-Данные: data/faq.json — {"categories": [{"name", "questions": [{"q","a"}]}]}.
-Файл перечитывается при каждом обращении — правки подхватываются без
-перезапуска бота; битые записи пропускаются с предупреждением в system-log.
+Данные: таблицы faq_categories/faq_questions (пакет db). Первичный перенос
+из data/faq.json выполняет db.seed при старте (одноразово; JSON остаётся
+как резервная копия). Список перечитывается при каждом обращении — правки
+в БД подхватываются без перезапуска бота.
 """
 
 import json
 import logging
 import re
 from datetime import datetime
-from pathlib import Path
 
 from aiogram import F, Router, types
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
+from db import faq as faq_db
 from keyboards import MAIN_BUTTONS
 
 router = Router(name="faq")
 
 dialog_logger = logging.getLogger("dialog")
 system_logger = logging.getLogger("system")
-
-BASE_DIR = Path(__file__).resolve().parent.parent
-FAQ_PATH = BASE_DIR / "data" / "faq.json"
 
 FAQ_BUTTON = "❓ FAQ"
 SEARCH_LIMIT = 10      # максимум вопросов в результатах поиска
@@ -50,37 +48,11 @@ class FaqState(StatesGroup):
 
 
 # ============================================================
-# ДАННЫЕ: data/faq.json
+# ДАННЫЕ: faq_categories + faq_questions (пакет db)
 # ============================================================
-def _load_faq() -> list[dict]:
-    """Читает категории FAQ; битые записи пропускает с предупреждением."""
-    try:
-        with open(FAQ_PATH, encoding="utf-8") as f:
-            raw = json.load(f)
-    except FileNotFoundError:
-        system_logger.warning(f"faq.json не найден: {FAQ_PATH}")
-        return []
-    except Exception as e:
-        system_logger.warning(f"faq.json read failed: {e}")
-        return []
-
-    if not isinstance(raw, dict):
-        system_logger.warning("faq.json: корень не объект — пропущен")
-        return []
-
-    categories = []
-    for cat in raw.get("categories", []):
-        if not isinstance(cat, dict) or not cat.get("name"):
-            system_logger.warning("faq.json: категория без name — пропущена")
-            continue
-        questions = []
-        for q in cat.get("questions", []):
-            if isinstance(q, dict) and q.get("q") and q.get("a"):
-                questions.append({"q": str(q["q"]), "a": str(q["a"])})
-            else:
-                system_logger.warning(f"faq.json: вопрос без q/a в «{cat['name']}» — пропущен")
-        categories.append({"name": str(cat["name"]), "questions": questions})
-    return categories
+async def get_categories() -> list[dict]:
+    """Категории FAQ с вопросами — [{"name", "questions": [{"q","a"}]}]."""
+    return await faq_db.load()
 
 
 # ============================================================
@@ -241,7 +213,7 @@ async def button_faq(message: types.Message, state: FSMContext) -> None:
     даже если был активен поиск (хендлер зарегистрирован раньше FSM)."""
     await state.clear()
     _log(message.from_user.id, "faq_open", {})
-    categories = _load_faq()
+    categories = await get_categories()
     await message.answer(
         _render_main(categories),
         reply_markup=_main_kb(categories),
@@ -254,7 +226,7 @@ async def callback_menu(callback: types.CallbackQuery, state: FSMContext) -> Non
     """⬅️ Категории — к главному экрану FAQ."""
     await state.clear()
     _log(callback.from_user.id, "faq_menu", {})
-    categories = _load_faq()
+    categories = await get_categories()
     await _edit(callback, _render_main(categories), _main_kb(categories))
     await callback.answer()
 
@@ -266,7 +238,7 @@ async def callback_category(callback: types.CallbackQuery) -> None:
     if ci is None:
         await callback.answer("Категория не найдена", show_alert=True)
         return
-    categories = _load_faq()
+    categories = await get_categories()
     if ci >= len(categories):
         await callback.answer("Категория не найдена", show_alert=True)
         return
@@ -284,7 +256,7 @@ async def callback_question(callback: types.CallbackQuery) -> None:
     if ci is None or qi is None:
         await callback.answer("Вопрос не найден", show_alert=True)
         return
-    categories = _load_faq()
+    categories = await get_categories()
     if ci >= len(categories) or qi >= len(categories[ci]["questions"]):
         await callback.answer("Вопрос не найден", show_alert=True)
         return
@@ -324,7 +296,7 @@ async def process_search_text(message: types.Message, state: FSMContext) -> None
     if not raw:
         await message.answer("🔎 Пустой запрос. Введите ключевое слово текстом.")
         return
-    categories = _load_faq()
+    categories = await get_categories()
     matches = _find(raw, categories)
     _log(message.from_user.id, "faq_search", {"query": raw, "found": len(matches)})
     await state.clear()

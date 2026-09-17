@@ -7,7 +7,7 @@
   2. Рендер: HTML-текст сценария ≤ 4000 символов (лимит edit_text) и содержит
      каждый рекомендуемый код + его ТТХ из MODELS; полная сводка — plain-текст
      и режется answer_long'ом на части ≤ 4000;
-  3. Кнопки: «🎯 Сценарии» есть в MAIN_BUTTONS (защита от AI-фолбэка) и в main_kb;
+  3. Кнопки: «📚 Шпаргалки» есть в MAIN_BUTTONS (защита от AI-фолбэка) и в main_kb;
   4. Роутеры: menu < scenarios < fallback в bot.dp (карточки model: из сценариев
      обрабатывает menu; fallback остаётся последним);
   5. Флоу (фейковые Message/CallbackQuery): список → сценарий → назад; scn:full;
@@ -150,9 +150,9 @@ async def main():
     check(all(len(p) <= 4000 for p in parts), f"полная сводка режется на {len(parts)} частей ≤ 4000", "часть полной сводки > 4000")
 
     print("== 3. Кнопки главного меню ==")
-    check("🎯 Сценарии" in MAIN_BUTTONS, "«🎯 Сценарии» в MAIN_BUTTONS (не уйдёт в AI-фолбэк)", "«🎯 Сценарии» НЕТ в MAIN_BUTTONS")
+    check("📚 Шпаргалки" in MAIN_BUTTONS, "«📚 Шпаргалки» в MAIN_BUTTONS (не уйдёт в AI-фолбэк)", "«📚 Шпаргалки» НЕТ в MAIN_BUTTONS")
     kb_texts = [b.text for row in main_kb.keyboard for b in row]
-    check("🎯 Сценарии" in kb_texts, "«🎯 Сценарии» в main_kb", "«🎯 Сценарии» НЕТ в main_kb")
+    check("📚 Шпаргалки" in kb_texts, "«📚 Шпаргалки» в main_kb", "«📚 Шпаргалки» НЕТ в main_kb")
 
     print("== 4. Порядок роутеров ==")
     import bot

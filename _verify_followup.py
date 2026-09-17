@@ -6,7 +6,7 @@
   3. Парсер срока parse_due: «через N дней/недель/минут», «завтра»,
      «послезавтра», «сегодня», «ДД.ММ[.ГГГГ]», без срока;
   4. Поток: кнопка → пустой список; ➕ → FSM; текст с «через 3 дня» →
-     сохранён в data/followups.json (временный) с due/created_at, FSM сброшен;
+     сохранён в БД (изолированную, без сидирования) с due/created_at, FSM сброшен;
   5. Просмотр: группы «Предстоящие», кнопка «✅ Выполнить» с id;
   6. Отметка выполненным → пропало из активных, появилось в «Выполненных»;
      вернуть; удалить; изоляция пользователей;
@@ -14,15 +14,16 @@
   8. collect_due — активные напоминания со сроком на дату;
   9. ЭТАП 2 (система напоминаний о follow-up): адресаты daily_recipients,
      рендер render_digest, рассылка send_daily_digest, _run_digest с
-     отметкой last_daily (защита от дубля при рестарте).
+     отметкой last_daily (защита от дубля при рестарте);
+  10. ЭТАП 3 (предварительные напоминания): parse_due_at — точный момент
+      из текста, send_upcoming_reminders «за 10/5/2 минуты» с журналом
+      followup_reminders (рестарты и повторные сканы без дублей).
 
 Запуск: .venv\\Scripts\\python.exe _verify_followup.py
 """
 import asyncio
 import sys
-import tempfile
-from datetime import date, timedelta
-from pathlib import Path
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 
 import os
@@ -39,12 +40,9 @@ import handlers.followup as fup  # noqa: E402
 from aiogram.fsm.context import FSMContext  # noqa: E402
 from aiogram.fsm.storage.base import StorageKey  # noqa: E402
 from aiogram.fsm.storage.memory import MemoryStorage  # noqa: E402
+from db import close_db, init_db  # noqa: E402
+from db.engine import init_engine  # noqa: E402
 from keyboards import MAIN_BUTTONS, main_kb  # noqa: E402
-
-# Хранилище — во временный файл, чтобы не трогать реальный data/followups.json
-fup.FOLLOWUPS_PATH = Path(tempfile.gettempdir()) / "followups_test.json"
-if fup.FOLLOWUPS_PATH.exists():
-    fup.FOLLOWUPS_PATH.unlink()
 
 
 class FakeMsg:
@@ -86,6 +84,11 @@ def _cb(data, user_id=4242):
 async def main():
     ok = []
 
+    # Изолированная пустая БД в памяти: тестовые проверки создают все данные
+    # сами и ждут точные списки адресатов — сидирование выключено.
+    init_engine("sqlite+aiosqlite://")
+    await init_db(sources=None)
+
     # 0) роутер и кнопка меню
     assert any(getattr(r, "name", "") == "followup" for r in bot.dp.sub_routers), "router not included"
     assert "⏰ Напоминания" in MAIN_BUTTONS, "нет в MAIN_BUTTONS (уйдёт в AI-фолбэк)"
@@ -113,6 +116,18 @@ async def main():
         assert got == expected, f"parse_due({raw!r}) = {got}, ожидалось {expected}"
     ok.append("parse-due")
 
+    # 3б) точный момент события: parse_due_at (ЭТАП 3)
+    now_fixed = datetime(2026, 9, 16, 10, 0)
+    assert fup.parse_due_at("через 30 минут", now_fixed) == now_fixed + timedelta(minutes=30)
+    assert fup.parse_due_at("через 2 часа", now_fixed) == now_fixed + timedelta(hours=2)
+    assert fup.parse_due_at("через 3 дня в 15:00", now_fixed) == datetime(2026, 9, 19, 15, 0)
+    assert fup.parse_due_at("завтра в 15:40", now_fixed) == datetime(2026, 9, 17, 15, 40)
+    assert fup.parse_due_at("25.09 в 9:05", now_fixed) == datetime(2026, 9, 25, 9, 5)
+    assert fup.parse_due_at("в 15:40", now_fixed) == datetime(2026, 9, 16, 15, 40)
+    assert fup.parse_due_at("через 3 дня", now_fixed) is None
+    assert fup.parse_due_at("завтра", now_fixed) is None
+    ok.append("parse-due-at")
+
     storage = MemoryStorage()
     key = StorageKey(bot_id=1, chat_id=4242, user_id=4242)
     state = FSMContext(storage=storage, key=key)
@@ -131,13 +146,11 @@ async def main():
     m = FakeMsg("Клиент @username, модель 6S4P, позвонить через 3 дня")
     await fup.process_followup_text(m, state)
     assert (await state.get_state()) is None, "FSM не сброшен после сохранения"
-    items = fup.get_active(4242)
+    items = await fup.get_active(4242)
     assert len(items) == 1, items
     assert items[0]["text"].startswith("Клиент @username")
     assert items[0]["due"] == (date.today() + timedelta(days=3)).isoformat(), items[0]["due"]
     assert items[0]["created_at"] and items[0]["done"] is False and items[0]["done_at"] is None
-    raw = fup.FOLLOWUPS_PATH.read_text(encoding="utf-8")
-    assert '"seq": 1' in raw and '"user_id": 4242' in raw
     assert "сохранено" in m.answers[-1][0]
     ok.append("create")
 
@@ -152,17 +165,17 @@ async def main():
     ok.append("view")
 
     # 5) collect_due — хук утренней сводки (ЭТАП 2)
-    assert fup.collect_due(4242) == []
+    assert await fup.collect_due(4242) == []
     added = await fup.add_followup(4242, "Позвонить сегодня", date.today())
-    assert len(fup.collect_due(4242)) == 1
-    assert fup.collect_due(4242, date.today() + timedelta(days=1)) == []
+    assert len(await fup.collect_due(4242)) == 1
+    assert await fup.collect_due(4242, date.today() + timedelta(days=1)) == []
     ok.append("collect-due")
 
     # 6) ✅ выполнено → из активных пропало, в «Выполненных» появилось
     fid = items[0]["id"]
     assert await fup.mark_done(4242, fid)
-    assert all(i["id"] != fid for i in fup.get_active(4242))
-    done = fup.get_done(4242)
+    assert all(i["id"] != fid for i in await fup.get_active(4242))
+    done = await fup.get_done(4242)
     assert done and done[0]["id"] == fid and done[0]["done_at"], done
     cb = _cb("fup:done_list")
     await fup.callback_done_list(cb)
@@ -172,11 +185,11 @@ async def main():
     # 7) ↩️ вернуть → активных снова 2 (с «Позвонить сегодня»); 🗑 удалить
     cb = _cb(f"fup:undone:{fid}")
     await fup.callback_undone(cb)
-    assert len(fup.get_active(4242)) == 2
+    assert len(await fup.get_active(4242)) == 2
     await fup.mark_done(4242, fid)
     cb = _cb(f"fup:del:{fid}")
     await fup.callback_del(cb)
-    assert all(i["id"] != fid for i in fup.get_done(4242)), "удалённое осталось в файле"
+    assert all(i["id"] != fid for i in await fup.get_done(4242)), "удалённое осталось в БД"
     ok.append("undone+delete")
 
     # 8) изоляция пользователей: чужое id не трогаем
@@ -184,9 +197,9 @@ async def main():
     assert await fup.mark_done(777, foreign["id"]) is False
     assert await fup.reopen(777, foreign["id"]) is False
     assert await fup.delete_followup(777, foreign["id"]) is False
-    assert fup.get_active(4242)[0]["text"] == "чужому не положено" or len(fup.get_active(4242)) == 2
+    assert (await fup.get_active(4242))[0]["text"] == "чужому не положено" or len(await fup.get_active(4242)) == 2
     await fup.callback_done(_cb(f"fup:done:{foreign['id']}", user_id=777))
-    assert all(i["id"] != foreign["id"] for i in fup.get_done(777)), "чужое напоминание помечено"
+    assert all(i["id"] != foreign["id"] for i in await fup.get_done(777)), "чужое напоминание помечено"
     ok.append("user-isolation")
 
     # 9) выходы из FSM: слово отмены, кнопка меню, повторная «⏰ Напоминания»
@@ -209,11 +222,11 @@ async def main():
     await fup.add_followup(4242, "сводка просрочка", today - timedelta(days=1))
     await fup.add_followup(4242, "сводка будущее", today + timedelta(days=1))
     await fup.add_followup(4243, "чужое на сегодня", today)
-    assert fup.daily_recipients() == [4242, 4243], fup.daily_recipients()
-    digest = fup.render_digest(4242)
+    assert await fup.daily_recipients() == [4242, 4243], await fup.daily_recipients()
+    digest = await fup.render_digest(4242)
     assert "Follow-up" in digest and "Просроченные" in digest and "На сегодня" in digest
     assert "сводка просрочка" in digest and "сводка на сегодня" in digest
-    assert fup.render_digest(999) is None            # без дедлайнов — не беспокоим
+    assert await fup.render_digest(999) is None            # без дедлайнов — не беспокоим
 
     class _FakeBot:
         def __init__(self):
@@ -229,16 +242,32 @@ async def main():
     cbs = [b.callback_data for row in fake_bot.sends[0][2]["reply_markup"].inline_keyboard
            for b in row]
     assert "fup:list" in cbs and "fup:cancel" in cbs, cbs
-    assert fup._get_last_daily() is None             # факт отмечает только _run_digest
+    assert await fup._get_last_daily() is None             # факт отмечает только _run_digest
     await fup._run_digest(fake_bot, today)
-    assert fup._get_last_daily() == today
-    assert fup._digest_due_now(today) is False       # рестарт в тот же день — без дубля
+    assert await fup._get_last_daily() == today
+    assert await fup._digest_due_now(today) is False       # рестарт в тот же день — без дубля
     ok.append("digest")
 
-    print("OK:", ", ".join(ok))
+    # 11) ЭТАП 3: предварительные напоминания «за 10/5/2 минуты»
+    t0 = datetime.now().replace(microsecond=0)
+    due9 = t0 + timedelta(minutes=9)
+    up = await fup.add_followup(4242, "созвон по апгрейду", due9.date(), due9)
+    assert await fup.send_upcoming_reminders(fake_bot, now=t0) == 1
+    uid9, text9, kw9 = fake_bot.sends[-1]
+    assert uid9 == 4242, uid9
+    assert "Через 9 минут" in text9 and "созвон по апгрейду" in text9, text9
+    assert kw9.get("parse_mode") == "HTML"
+    assert await fup.send_upcoming_reminders(fake_bot, now=t0) == 0        # дубля нет
+    assert len(fake_bot.sends) == 5                     # 4 сводки (2 рассылки) + 1 напоминание
+    assert await fup.send_upcoming_reminders(fake_bot, now=t0 + timedelta(minutes=4)) == 1
+    assert "Через 5 минут" in fake_bot.sends[-1][1]
+    await fup.mark_done(4242, up["id"])
+    assert await fup.send_upcoming_reminders(fake_bot, now=t0 + timedelta(minutes=7)) == 0
+    assert await fup.upcoming_items(t0) == []                              # выполненное вне окна
+    ok.append("upcoming")
 
-    if fup.FOLLOWUPS_PATH.exists():
-        fup.FOLLOWUPS_PATH.unlink()
+    print("OK:", ", ".join(ok))
+    await close_db()
 
 
 asyncio.run(main())

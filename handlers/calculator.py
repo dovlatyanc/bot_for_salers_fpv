@@ -10,11 +10,12 @@
   4) бот показывает маржу в рублях, маржу в %, рекомендацию по скидке и сверку
      с прайсом (факт vs плановая маржа; между какими ступенями прайса цена).
 
-Каждый завершённый расчёт сохраняется в config/calc_history.json —
-кнопка «📊 История расчётов» показывает последние 5 расчётов этого менеджера.
+Каждый завершённый расчёт сохраняется в SQLite (пакет db, таблица
+calc_entries) — кнопка «📊 История расчётов» показывает последние 5 расчётов
+этого менеджера.
 
 Модуль не импортирует bot.py (см. handlers/__init__.py): список моделей и базовые
-цены берутся из config/prices.json, логи пишутся через logging.getLogger(...)
+цены берутся из таблицы prices, логи пишутся через logging.getLogger(...)
 (логгеры 'dialog' и 'system' настраиваются в logging_setup.py).
 
 Подключение (в bot.py, сразу после создания Dispatcher):
@@ -22,20 +23,18 @@
     dp.include_router(calculator_router)
 """
 
-import asyncio
 import html
 import json
 import logging
-import os
 import re
 from datetime import datetime
-from pathlib import Path
 
 from aiogram import F, Router, types
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
+from db import calc_history as history_db, prices as prices_db
 from keyboards import MAIN_BUTTONS
 
 router = Router(name="calculator")
@@ -43,11 +42,6 @@ router = Router(name="calculator")
 # Общие логгеры бота (настраиваются в bot.py) — свои хендлеры к ним не добавляем
 dialog_logger = logging.getLogger("dialog")
 system_logger = logging.getLogger("system")
-
-# Пути к конфигам — от каталога проекта (родитель пакета handlers), независимо от CWD
-BASE_DIR = Path(__file__).resolve().parent.parent
-PRICES_PATH = BASE_DIR / "config" / "prices.json"
-HISTORY_PATH = BASE_DIR / "config" / "calc_history.json"
 
 HISTORY_LIMIT = 5      # «последние 5 расчётов этого менеджера»
 DISCOUNT_SHARE = 0.30  # рекомендованный предел скидки — 30% от маржи
@@ -74,51 +68,20 @@ class MarginState(StatesGroup):
 
 
 # ============================================================
-# ЧИСТАЯ ЛОГИКА: ЦЕНЫ, ПАРСИНГ, ФОРМАТИРОВАНИЕ
+# ХРАНИЛИЩЕ: прайс и история расчётов — через пакет db
 # ============================================================
-def _load_prices() -> dict:
-    """Прайс-лист из config/prices.json: {модель: {cost, cash, wholesale, vat5, vat22, profit}}.
+async def get_prices() -> dict:
+    """Прайс-лист из таблицы prices: {модель: {cost, cash, wholesale, vat5, vat22, profit}}.
 
-    Обязательное поле — cost (закупочная цена > 0); остальные ступени необязательны.
-    Поддерживается и старый плоский формат {модель: закупка} — он превращается
-    в {модель: {"cost": закупка}}. Битые записи пропускаются (причина — в system-лог).
-    Пустой dict — файл отсутствует/битый (причина пишется в system-лог).
+    Пустой dict — таблица пуста (первичный перенос из config/prices.json
+    делает db.seed при старте; JSON остаётся как резервная копия).
     """
-    try:
-        with open(PRICES_PATH, encoding="utf-8") as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        system_logger.warning(f"prices.json not found: {PRICES_PATH}")
-        return {}
-    except Exception as e:
-        system_logger.warning(f"prices.json read failed: {e}")
-        return {}
-    if not isinstance(data, dict):
-        system_logger.warning("prices.json: ожидается JSON-объект {модель: {cost, cash, ...}}")
-        return {}
-    clean: dict = {}
-    for code, value in data.items():
-        if isinstance(value, (int, float)):        # старый формат: число = закупка
-            value = {"cost": value}
-        if not isinstance(value, dict):
-            system_logger.warning(f"prices.json: некорректная запись для {code}: {value!r}")
-            continue
-        entry: dict = {}
-        for key in ("cost", "cash", "wholesale", "vat5", "vat22", "profit"):
-            if key not in value:
-                continue
-            try:
-                price = float(value[key])
-            except (TypeError, ValueError):
-                system_logger.warning(f"prices.json: некорректная цена {key} для {code}: {value[key]!r}")
-                continue
-            if price > 0:
-                entry[key] = price
-        if entry.get("cost", 0) <= 0:
-            system_logger.warning(f"prices.json: нет закупочной цены для {code} — запись пропущена")
-            continue
-        clean[str(code)] = entry
-    return clean
+    return await prices_db.load()
+
+
+async def get_price(code: str) -> dict | None:
+    """Ступени прайса одной модели (None — модели нет или закупка не задана)."""
+    return await prices_db.get(code)
 
 
 def _model_sort_key(code: str) -> tuple:
@@ -167,7 +130,7 @@ def _fmt_pct(value: float) -> str:
     return f"{value:.1f} %"
 
 
-# Ступени прайса в порядке показа: ключ в prices.json → подпись
+# Ступени прайса в порядке показа: ключ таблицы prices → подпись
 PRICE_FIELDS: tuple[tuple[str, str], ...] = (
     ("cost", "закупка"),
     ("cash", "розница"),
@@ -226,48 +189,16 @@ def _price_review(price: float, margin: float, info: dict | None) -> str:
 
 
 # ============================================================
-# ЧИСТАЯ ЛОГИКА: ИСТОРИЯ РАСЧЁТОВ (config/calc_history.json)
+# ХРАНИЛИЩЕ: история расчётов (таблица calc_entries)
 # ============================================================
-_history_lock = asyncio.Lock()
-
-
-def _read_history() -> dict:
-    try:
-        with open(HISTORY_PATH, encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except FileNotFoundError:
-        return {}
-    except Exception as e:
-        system_logger.warning(f"calc_history read failed: {e}")
-        return {}
-
-
-def _write_history(data: dict) -> None:
-    try:
-        HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        tmp = HISTORY_PATH.with_suffix(".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, HISTORY_PATH)  # атомарная замена
-    except Exception as e:
-        system_logger.warning(f"calc_history write failed: {e}")
-
-
 async def add_history_entry(user_id: int, entry: dict) -> None:
     """Сохраняет расчёт менеджера; хранит не более HISTORY_LIMIT последних."""
-    async with _history_lock:
-        data = _read_history()
-        key = str(user_id)
-        items = data.get(key, [])
-        items.insert(0, entry)  # свежие — в начало
-        data[key] = items[:HISTORY_LIMIT]
-        _write_history(data)
+    await history_db.add(user_id, entry, keep_last=HISTORY_LIMIT)
 
 
-def get_history(user_id: int) -> list[dict]:
+async def get_history(user_id: int) -> list[dict]:
     """Последние расчёты менеджера (новые — в начале списка)."""
-    return _read_history().get(str(user_id), [])[:HISTORY_LIMIT]
+    return await history_db.get(user_id, HISTORY_LIMIT)
 
 
 # ============================================================
@@ -296,7 +227,7 @@ def _cancel_row() -> list[types.InlineKeyboardButton]:
 
 
 def _models_kb(prices: dict) -> types.InlineKeyboardMarkup:
-    # NEW: список моделей = ключи config/prices.json, у каждой — закупка из прайса
+    # NEW: список моделей = ключи таблицы prices, у каждой — закупка из прайса
     rows: list[list[types.InlineKeyboardButton]] = []
     for code in sorted(prices, key=_model_sort_key):
         label = f"{code} — закупка {_fmt_money(prices[code]['cost'])}"
@@ -420,11 +351,11 @@ async def cmd_cancel(message: types.Message, state: FSMContext):
 async def start_calculator(message: types.Message, state: FSMContext):
     # NEW: выходим из любого предыдущего сценария и показываем список моделей
     await state.clear()
-    prices = _load_prices()
+    prices = await get_prices()
     if not prices:
         await message.answer(
-            "⚠️ Не удалось прочитать <b>config/prices.json</b>.\n"
-            "Добавьте файл с базовыми закупочными ценами и нажмите кнопку ещё раз.",
+            "⚠️ Прайс-лист пуст.\n"
+            "Добавьте модели и закупочные цены и нажмите кнопку ещё раз.",
             parse_mode="HTML",
         )
         return
@@ -441,7 +372,7 @@ async def start_calculator(message: types.Message, state: FSMContext):
 async def show_history(message: types.Message, state: FSMContext):
     # выход из активного FSM-сценария (см. button_ttx в menu.py)
     await state.clear()
-    entries = get_history(message.from_user.id)
+    entries = await get_history(message.from_user.id)
     _log(message.from_user.id, "calc_history_view", {"count": len(entries)})
     await message.answer(
         _render_history(entries),
@@ -462,7 +393,7 @@ async def _exit_flow(message: types.Message, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("calc:model:"), MarginState.choosing_model)
 async def callback_choose_model(callback: types.CallbackQuery, state: FSMContext):
     code = callback.data.split(":", 2)[2]  # код может содержать пробелы: «8S2P XT-60»
-    info = _load_prices().get(code) or {}
+    info = await get_price(code) or {}
     base = info.get("cost")
     await state.update_data(model=code)
     await state.set_state(MarginState.waiting_for_cost)
@@ -495,8 +426,8 @@ async def callback_cost_base(callback: types.CallbackQuery, state: FSMContext):
     # NEW: «берётся из config» — закупочная цена (поле cost прайса) одной кнопкой
     data = await state.get_data()
     code = data.get("model")
-    info = _load_prices().get(code) or {}
-    base = info.get("cost") if code else None
+    info = (await get_price(code)) if code else None
+    base = info.get("cost") if info else None
     if base is None:
         await callback.answer("Базовая цена не найдена — введите число", show_alert=True)
         return
@@ -525,9 +456,9 @@ async def callback_cost_base_stale(callback: types.CallbackQuery):
 async def callback_restart(callback: types.CallbackQuery, state: FSMContext):
     # NEW: «Новый расчёт» — с экрана результата или истории; сбрасывает прошлый сценарий
     await state.clear()
-    prices = _load_prices()
+    prices = await get_prices()
     if not prices:
-        await _edit(callback, "⚠️ Не удалось прочитать <b>config/prices.json</b>.", None)
+        await _edit(callback, "⚠️ Прайс-лист пуст.", None)
         await callback.answer()
         return
     _log(callback.from_user.id, "calc_restart", {})
@@ -625,8 +556,8 @@ async def process_price_input(message: types.Message, state: FSMContext):
     await add_history_entry(message.from_user.id, entry)
     await state.clear()  # расчёт завершён — состояние больше не нужно
     _log(message.from_user.id, "calc_result", {k: entry[k] for k in ("model", "cost", "price", "margin", "margin_pct")})
-    # NEW: сверка результата с прайсом модели (если модель есть в config/prices.json)
-    await message.answer(_render_result(entry, _load_prices().get(str(model))), reply_markup=_result_kb(), parse_mode="HTML")
+    # NEW: сверка результата с прайсом модели (если модель есть в таблице prices)
+    await message.answer(_render_result(entry, await get_price(str(model))), reply_markup=_result_kb(), parse_mode="HTML")
 
 
 @router.message(MarginState.waiting_for_price)

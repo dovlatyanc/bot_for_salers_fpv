@@ -1,22 +1,22 @@
 """«❓ FAQ»: навигация, FSM-поиск, выход по кнопкам меню и словам отмены."""
 
 from handlers.faq import (
-    FaqState, _find, _load_faq, button_faq, callback_cancel, callback_category,
-    callback_menu, callback_question, callback_search, process_search_text,
-    search_not_text,
+    FaqState, _find, button_faq, callback_cancel, callback_category,
+    callback_menu, callback_question, callback_search, get_categories,
+    process_search_text, search_not_text,
 )
 from tests.fakes import FakeCb, FakeMsg, kb_data, make_state
 
 
-def test_load_faq_valid():
-    cats = _load_faq()
+async def test_load_faq_valid():
+    cats = await get_categories()
     assert len(cats) >= 5
     for cat in cats:
         assert cat["name"].strip() and cat["questions"]
 
 
-def test_find_matches_and_limits():
-    cats = _load_faq()
+async def test_find_matches_and_limits():
+    cats = await get_categories()
     matches = _find("гарантия", cats)
     assert matches
     assert all(0 <= ci < len(cats) for ci, _, _ in matches)
@@ -39,7 +39,7 @@ async def test_button_faq_main_screen():
 
 
 async def test_category_and_question_navigation():
-    cats = _load_faq()
+    cats = await get_categories()
     cb = FakeCb("faq:c:0")
     await callback_category(cb)
     text, kwargs = cb.message.edits[0]

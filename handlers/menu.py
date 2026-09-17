@@ -4,7 +4,9 @@
   /ai <вопрос>             — вопрос AI-ассистенту командой;
   «📊 ТТХ»                 — выбор ряда (row:) и карточки моделей (model:);
   /checklist               — старый статический чек-лист подбора;
-  «🛑 Стоп-лист», «📦 Памятка» — статические экраны стандарта продаж;
+  «🛑 Стоп-лист», «📦 Памятка» — статические экраны стандарта продаж (тексты —
+                           константы STOPLIST_TEXT / MEMO_TEXT: их же показывает
+                           «📚 Шпаргалки» — handlers/cheatsheets.py);
   «📝 Обратная связь»      — FSM FeedbackState, сообщение уходит администратору;
   fb_good / fb_bad         — оценка ответа AI;
   dummy                    — no-op callback (кнопки-«псевдо»).
@@ -38,17 +40,14 @@ async def cmd_start(message: types.Message):
 
 <b>Кнопки:</b>
 📊 ТТХ — характеристики моделей
-🧠 Подбор — экспресс-подбор по задаче за 3 вопроса
-🎯 Сценарии — готовые шпаргалки под типовых клиентов
-🤖 AI-ассистент — вопрос по клиенту или возражению
-🔧 Своя сборка — расчёт нестандартной конфигурации
+🔎 Поиск — подбор АКБ по фильтрам
 💰 Калькулятор — маржа и рекомендация по скидке
-📊 История расчётов — последние 5 расчётов
-⏰ Напоминания — дела по клиентам: сроки и звонки
-❓ FAQ — ответы на частые вопросы клиентов
-🛑 Стоп-лист — что нельзя говорить и продавать
-📦 Памятка — шаблон для клиента после продажи
+🔧 Своя сборка — расчёт нестандартной конфигурации
+📚 Шпаргалки — подбор, сценарии, FAQ, возражения, стоп-лист, памятка
+🤖 AI-ассистент — вопрос по клиенту или возражению
 📝 Обратная связь — написать администратору
+⏰ Напоминания — дела по клиентам: сроки и звонки
+📊 История расчётов — последние 5 расчётов
 
 Также я понимаю <b>голосовые сообщения</b>!
 """.strip()
@@ -108,11 +107,10 @@ async def cmd_checklist(message: types.Message):
 """.strip()
     await message.answer(text)
 
-@router.message(F.text == "🛑 Стоп-лист")
-async def button_stoplist(message: types.Message, state: FSMContext):
-    # выход из активного FSM-сценария (см. button_ttx)
-    await state.clear()
-    text = """
+# Тексты статических экранов вынесены в константы: их же показывает
+# «📚 Шпаргалки» (cheat:stoplist / cheat:memo в handlers/cheatsheets.py),
+# чтобы не копипастить.
+STOPLIST_TEXT = """
 <b>Стоп-факторы и запрещённые формулировки:</b>
 
 <b>Нельзя продавать:</b>
@@ -127,13 +125,8 @@ async def button_stoplist(message: types.Message, state: FSMContext):
 - «BMS не нужна»;
 - «Сами виноваты».
 """.strip()
-    await message.answer(text, parse_mode="HTML")
 
-@router.message(F.text == "📦 Памятка")
-async def button_memo(message: types.Message, state: FSMContext):
-    # выход из активного FSM-сценария (см. button_ttx)
-    await state.clear()
-    text = """
+MEMO_TEXT = """
 <b>Шаблон памятки клиенту:</b>
 
 Здравствуйте! Спасибо за покупку АКБ Li-Ion 21700.
@@ -147,7 +140,18 @@ async def button_memo(message: types.Message, state: FSMContext):
 
 После первого заряда пришлите фото экрана зарядника с напряжениями групп.
 """.strip()
-    await message.answer(text, parse_mode="HTML")
+
+@router.message(F.text == "🛑 Стоп-лист")
+async def button_stoplist(message: types.Message, state: FSMContext):
+    # выход из активного FSM-сценария (см. button_ttx)
+    await state.clear()
+    await message.answer(STOPLIST_TEXT, parse_mode="HTML")
+
+@router.message(F.text == "📦 Памятка")
+async def button_memo(message: types.Message, state: FSMContext):
+    # выход из активного FSM-сценария (см. button_ttx)
+    await state.clear()
+    await message.answer(MEMO_TEXT, parse_mode="HTML")
 
 # ============================================================
 # AI-АССИСТЕНТ (кнопка меню)

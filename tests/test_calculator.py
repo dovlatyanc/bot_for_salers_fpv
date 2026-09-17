@@ -1,25 +1,15 @@
 """FSM «💰 Калькулятор»: зеркало меню (регрессия «💬 Возражения»), расчёт, история."""
 
-import pytest
-
 import handlers.calculator as calc
 from data import MODELS
 from handlers.calculator import (
-    CALC_BUTTON, HISTORY_BUTTON, MarginState, _load_prices, _parse_money,
+    CALC_BUTTON, HISTORY_BUTTON, MarginState, _parse_money,
     _price_review, _render_history, _render_result, add_history_entry,
     callback_choose_model, callback_cost_base, cmd_cancel, get_history,
-    process_cost_input, process_price_input, start_calculator,
+    get_prices, process_cost_input, process_price_input, start_calculator,
 )
 from keyboards import MAIN_BUTTONS, main_kb
 from tests.fakes import FakeCb, FakeMsg, make_state
-
-
-@pytest.fixture(autouse=True)
-def isolated_history(tmp_path, monkeypatch):
-    """История расчётов — во временный файл (реальный config/calc_history.json не трогаем)."""
-    path = tmp_path / "calc_history.json"
-    monkeypatch.setattr(calc, "HISTORY_PATH", path)
-    return path
 
 
 # ---------- меню и конфиги ----------
@@ -27,7 +17,7 @@ def isolated_history(tmp_path, monkeypatch):
 def test_menu_mirror_derived_from_main_buttons():
     assert calc.MENU_BUTTONS == frozenset(MAIN_BUTTONS) - {CALC_BUTTON, HISTORY_BUTTON}
     # регрессия P2: новые кнопки меню должны вести к выходу из FSM калькулятора
-    for btn in ("🎯 Сценарии", "💬 Возражения", "📊 ТТХ", "🔎 Поиск", "❓ FAQ"):
+    for btn in ("📚 Шпаргалки", "📊 ТТХ", "🔎 Поиск", "🤖 AI-ассистент"):
         assert btn in calc.MENU_BUTTONS, btn
     assert CALC_BUTTON not in calc.MENU_BUTTONS
     assert HISTORY_BUTTON not in calc.MENU_BUTTONS
@@ -35,8 +25,8 @@ def test_menu_mirror_derived_from_main_buttons():
     assert CALC_BUTTON in kb_texts and HISTORY_BUTTON in kb_texts
 
 
-def test_prices_cover_catalog():
-    prices = _load_prices()
+async def test_prices_cover_catalog():
+    prices = await get_prices()
     assert prices
     assert not (set(MODELS) - set(prices)), "нет цен для части каталога"
     for code, v in prices.items():
@@ -85,7 +75,7 @@ async def test_full_calculation_flow():
     assert "ниже плана на 4 200 ₽" in text       # план по прайсу 9 200, факт 5 000
     assert "выше максимальной ступени" in text  # 35000 > НДС 22% (21 265)
 
-    hist = get_history(42)
+    hist = await get_history(42)
     assert hist and hist[0]["model"] == "6S4P" and hist[0]["margin"] == 5000.0
 
 
@@ -94,16 +84,16 @@ async def test_base_price_from_config_one_button():
     await _start_with_model(state, code="6S2P")
     cb = FakeCb("calc:cost:base")
     await callback_cost_base(cb, state)
-    assert (await state.get_data())["cost"] == _load_prices()["6S2P"]["cost"]
+    assert (await state.get_data())["cost"] == (await get_prices())["6S2P"]["cost"]
     assert await state.get_state() == MarginState.waiting_for_price
 
 
 async def test_menu_button_exits_during_input():
-    """Регрессия P2: «💬 Возражения» раньше не было в зеркале меню
-    и парсилась как число вместо чистого выхода из FSM."""
+    """Регрессия P2: кнопка меню, отсутствующая в зеркале (раньше «💬 Возражения»,
+    теперь «📚 Шпаргалки»), не должна парситься как число — только чистый выход."""
     state = make_state()
     await _start_with_model(state)
-    await process_cost_input(FakeMsg("💬 Возражения"), state)
+    await process_cost_input(FakeMsg("📚 Шпаргалки"), state)
     assert await state.get_state() is None
 
 
@@ -136,7 +126,7 @@ async def test_history_limit_and_render():
             "ts": f"2026-09-15T10:0{i}:00", "model": f"M{i}",
             "cost": 1, "price": 2, "margin": 1, "margin_pct": 50.0,
         })
-    h = get_history(777)
+    h = await get_history(777)
     assert len(h) == 5 and h[0]["model"] == "M6" and h[-1]["model"] == "M2"
     assert "Пока пусто" in _render_history([])
     rendered = _render_history(h)

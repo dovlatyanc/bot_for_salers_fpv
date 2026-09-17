@@ -41,7 +41,7 @@ async def main():
     print("[OK] «AI-ассистент» во время ввода конфигурации -> чистый выход из FSM")
 
     # 2) другие кнопки меню и «отмена» во время ввода конфигурации
-    for text in ("🧠 Подбор", "🔎 Поиск", "❓ FAQ", "💰 Калькулятор", "отмена"):
+    for text in ("📚 Шпаргалки", "🔎 Поиск", "💰 Калькулятор", "отмена"):
         ctx = await new_ctx()
         await ctx.set_state(BuildState.waiting_for_config)
         msg = Msg(text)

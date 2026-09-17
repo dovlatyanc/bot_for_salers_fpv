@@ -45,6 +45,13 @@ YANDEX_MODEL = os.getenv("YANDEX_MODEL", "yandexgpt").strip()
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 PROXY_URL = os.getenv("PROXY_URL", "").strip()
 
+# --- База данных (пакет db) ---
+# SQLAlchemy URL. Пусто — SQLite: файл data/bot.db (путь подставит db.engine).
+# Переход на PostgreSQL позже — только смена строки и установка asyncpg:
+#   DB_URL=postgresql+asyncpg://fpv:password@localhost:5432/fpv_bot
+DB_URL = os.getenv("DB_URL", "").strip()
+
+
 if not BOT_TOKEN:
     raise SystemExit("BOT_TOKEN не задан. Проверьте файл .env")
 

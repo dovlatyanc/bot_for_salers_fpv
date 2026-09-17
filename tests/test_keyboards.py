@@ -22,8 +22,12 @@ def test_main_kb_structure():
     rows = [[b.text for b in row] for row in main_kb.keyboard]
     assert rows == [list(row) for row in MAIN_KEYBOARD_LAYOUT]
     texts = [t for row in rows for t in row]
-    for must in ("💰 Калькулятор", "📊 История расчётов", "💬 Возражения", "🎯 Сценарии"):
+    for must in ("💰 Калькулятор", "📊 История расчётов", "📚 Шпаргалки"):
         assert must in texts, must
+    # справочные разделы собраны под «📚 Шпаргалки» (handlers/cheatsheets.py)
+    for gone in ("🧠 Подбор", "🎯 Сценарии", "❓ FAQ", "💬 Возражения",
+                 "🛑 Стоп-лист", "📦 Памятка"):
+        assert gone not in texts, gone
 
 
 def _flat(kb):

@@ -4,8 +4,6 @@
 import asyncio
 import os
 import sys
-import tempfile
-from pathlib import Path
 from types import SimpleNamespace
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -19,12 +17,9 @@ except Exception:
 import bot  # noqa: E402  (точка входа: собирает dp со всеми роутерами)
 import handlers.calculator as calc  # noqa: E402
 from data import MODELS  # noqa: E402
+from db import close_db, init_db  # noqa: E402
+from db.engine import init_engine  # noqa: E402
 from keyboards import MAIN_BUTTONS, main_kb  # noqa: E402
-
-# История — во временный файл, чтобы не трогать реальную config/calc_history.json
-calc.HISTORY_PATH = Path(tempfile.gettempdir()) / "calc_history_test.json"
-if calc.HISTORY_PATH.exists():
-    calc.HISTORY_PATH.unlink()
 
 from aiogram.fsm.context import FSMContext  # noqa: E402
 from aiogram.fsm.storage.base import StorageKey  # noqa: E402
@@ -69,18 +64,24 @@ class FakeCb:
 async def main():
     ok = []
 
+    # Изолированная БД в памяти: таблицы + первичный перенос справочников
+    # (прайс) из JSON — проверка идет против реальных данных проекта.
+    init_engine("sqlite+aiosqlite://")
+    await init_db()
+
     # 0) роутер подключён, кнопки в меню
     assert any(getattr(r, "name", "") == "calculator" for r in bot.dp.sub_routers), "router not included"
     assert "💰 Калькулятор" in MAIN_BUTTONS and "📊 История расчётов" in MAIN_BUTTONS
     kb_texts = [b.text for row in main_kb.keyboard for b in row]
     assert "💰 Калькулятор" in kb_texts and "📊 История расчётов" in kb_texts
-    assert "🎯 Сценарии" in calc.MENU_BUTTONS, "новая кнопка меню должна вести к выходу из FSM калькулятора"
+    assert "📚 Шпаргалки" in calc.MENU_BUTTONS, "новая кнопка меню должна вести к выходу из FSM калькулятора"
     ok.append("router+menu")
 
-    # prices.json: вложенный прайс {модель: {cost, cash, wholesale, vat5, vat22, profit}},
-    # покрывает все модели каталога, profit согласован с cash - cost
-    prices = calc._load_prices()
-    assert prices, "prices.json пуст"
+    # prices: вложенный прайс {модель: {cost, cash, wholesale, vat5, vat22, profit}}
+    # (перенесён из config/prices.json), покрывает все модели каталога,
+    # profit согласован с cash - cost
+    prices = await calc.get_prices()
+    assert prices, "прайс пуст"
     missing = set(MODELS) - set(prices)
     assert not missing, f"нет цен для: {missing}"
     assert all(isinstance(v, dict) and v.get("cost", 0) > 0 for v in prices.values()), \
@@ -91,7 +92,7 @@ async def main():
     extra = set(prices) - set(MODELS)
     if extra:
         print("note: модели прайса вне каталога MODELS:", ", ".join(sorted(extra)))
-    ok.append("prices.json")
+    ok.append("prices")
 
     storage = MemoryStorage()
     key = StorageKey(bot_id=1, chat_id=4242, user_id=4242)
@@ -132,7 +133,7 @@ async def main():
     assert "Сверка с прайсом" in text, text          # NEW: блок сверки с прайсом
     assert "ниже плана на 4 200 ₽" in text, text     # план по прайсу 9 200, факт 5 000
     assert "выше максимальной ступени" in text, text  # 35 000 > НДС 22% (21 265)
-    hist = calc.get_history(4242)
+    hist = await calc.get_history(4242)
     assert hist and hist[0]["model"] == "6S4P" and hist[0]["margin"] == 5000.0
     ok.append("result+history")
 
@@ -168,7 +169,7 @@ async def main():
             "ts": f"2026-09-15T10:0{i}:00", "model": f"M{i}",
             "cost": 1, "price": 2, "margin": 1, "margin_pct": 50.0,
         })
-    h = calc.get_history(777)
+    h = await calc.get_history(777)
     assert len(h) == 5 and h[0]["model"] == "M6" and h[-1]["model"] == "M2"
     ok.append("history-limit")
 
@@ -192,8 +193,7 @@ async def main():
     ok.append("pure-functions")
 
     print("OK:", ", ".join(ok))
-    if calc.HISTORY_PATH.exists():
-        calc.HISTORY_PATH.unlink()
+    await close_db()
 
 
 asyncio.run(main())

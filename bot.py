@@ -6,12 +6,16 @@
   data/      — каталог моделей АКБ, справочники фильтров, сценарии продаж,
                база возражений;
   states/    — FSM-состояния;
+   db/        — SQLite-хранилище (follow-up, история расчётов, прайс, FAQ,
+                настройки): движок, репозитории, первичный перенос из JSON;
   keyboards/ — клавиатуры;
   utils/     — фильтрация, форматирование, отправка карточек;
   services/  — сервис-слой: ai_providers (провайдеры AI, выбор через AI_PROVIDER в .env);
   ai/        — фасад над AI-провайдером: ответы, feedback-кнопки, логирование;
-  handlers/  — роутеры: calculator, menu, scenarios, followup (включая
-               reminders_loop — фоновая утренняя сводка о follow-up),
+  handlers/  — роутеры: calculator, menu, cheatsheets («📚 Шпаргалки» —
+                inline-меню справочных разделов), scenarios, followup (включая
+               reminders_loop — фоновая утренняя сводка о follow-up, и
+               upcoming_loop — напоминания «за 10/5/2 минуты» до события),
                faq, objections, selection, search, build, voice, fallback.
 
 Запуск: python bot.py (из корня проекта).
@@ -24,11 +28,13 @@ from aiogram import Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import bot, system_logger
+from db import close_db, init_db
 from handlers.build import router as build_router
 from handlers.calculator import router as calculator_router
+from handlers.cheatsheets import router as cheatsheets_router
 from handlers.fallback import router as fallback_router
 from handlers.faq import router as faq_router
-from handlers.followup import reminders_loop, router as followup_router
+from handlers.followup import reminders_loop, router as followup_router, upcoming_loop
 from handlers.menu import router as menu_router
 from handlers.objections import router as objections_router
 from handlers.scenarios import router as scenarios_router
@@ -42,14 +48,16 @@ dp = Dispatcher(storage=MemoryStorage())
 # Порядок регистрации роутеров:
 #   1) calculator — FSM-ввод не должен перехватываться fallback'ом AI;
 #   2) menu — callback "model:<код>" из сценариев обрабатывается здесь;
-#   3) scenarios — после menu: кнопки «📦 Карточка <модель>» перехватывает menu;
-#   4) followup — FSM ограничен FollowUpState, но обязан стоять до fallback;
-#   5) faq — статические экраны + FSM поиска;
-#   6) objections — статические экраны + стоп-лист; до fallback;
-#   7) selection / search / build / voice — прочие сценарии;
-#   8) fallback — последним: догоняет всё, что не распознано выше.
+#   3) cheatsheets — «📚 Шпаргалки» (cheat:*): сразу после menu, до fallback;
+#   4) scenarios — после menu: кнопки «📦 Карточка <модель>» перехватывает menu;
+#   5) followup — FSM ограничен FollowUpState, но обязан стоять до fallback;
+#   6) faq — статические экраны + FSM поиска;
+#   7) objections — статические экраны + стоп-лист; до fallback;
+#   8) selection / search / build / voice — прочие сценарии;
+#   9) fallback — последним: догоняет всё, что не распознано выше.
 dp.include_router(calculator_router)
 dp.include_router(menu_router)
+dp.include_router(cheatsheets_router)
 dp.include_router(scenarios_router)
 dp.include_router(followup_router)
 dp.include_router(faq_router)
@@ -66,6 +74,10 @@ async def main():
     system_logger.info("Bot starting...")
     system_logger.info("=" * 50)
 
+    # БД: движок + таблицы + первичный перенос JSON-справочников (идемпотентно).
+    # До reminders_loop — он уже читает follow-up из таблиц.
+    await init_db()
+
     # Fail-fast: неверный AI_PROVIDER должен уронить старт,
     # а не первое сообщение пользователя.
     provider = get_ai_provider()
@@ -79,9 +91,11 @@ async def main():
             "Подбор) работают независимо."
         )
 
-    # Система напоминаний о follow-up (ЭТАП 2): фоновая утренняя сводка в 9:00.
-    # Задача одна на процесс и живёт независимо от переподключений polling.
+    # Система напоминаний о follow-up: ЭТАП 2 — фоновая утренняя сводка в 9:00,
+    # ЭТАП 3 — сканер предварительных напоминаний «за 10/5/2 минуты».
+    # Задачи по одной на процесс и живут независимо от переподключений polling.
     reminders_task = asyncio.create_task(reminders_loop(bot))
+    upcoming_task = asyncio.create_task(upcoming_loop(bot))
     retry_delay, max_retry_delay = 5, 60
     try:
         while True:
@@ -94,9 +108,11 @@ async def main():
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 1.5, max_retry_delay)
     finally:
-        reminders_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await reminders_task
+        for task in (reminders_task, upcoming_task):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        await close_db()
 
 
 if __name__ == "__main__":

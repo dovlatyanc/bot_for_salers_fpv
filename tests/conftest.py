@@ -20,3 +20,27 @@ os.environ.setdefault("ADMIN_ID", "1")
 os.environ.setdefault("AI_PROVIDER", "cloudflare")
 os.environ.setdefault("AI_PROXY_URL", "")
 os.environ.setdefault("AI_PROXY_TOKEN", "")
+
+import pytest  # noqa: E402
+
+import db  # noqa: E402
+from db.seed import DEFAULT_SOURCES, SeedSources  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+async def _db(tmp_path):
+    """Изолированная SQLite-БД на каждый тест (файл во временном каталоге).
+
+    Справочники prices/faq и история расчётов переносятся из проектных JSON —
+    тесты калькулятора и FAQ написаны против этих данных. follow_ups остаётся
+    пустой: тесты follow-up ждут точные списки адресатов, а чужие записи из
+    data/followups.json (реальный админ) их бы сломали.
+    """
+    db.init_engine(f"sqlite+aiosqlite:///{(tmp_path / 'test.db').as_posix()}")
+    await db.init_db(sources=SeedSources(
+        calc_history=DEFAULT_SOURCES.calc_history,
+        prices=DEFAULT_SOURCES.prices,
+        faq=DEFAULT_SOURCES.faq,
+    ))
+    yield
+    await db.close_db()

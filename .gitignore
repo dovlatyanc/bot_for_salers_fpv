@@ -9,6 +9,9 @@ __pycache__/
 # Логи и runtime-данные бота
 *.log
 config/calc_history.json
+data/bot.db
+data/bot.db-shm
+data/bot.db-wal
 
 # Node (fpv-ai-proxy)
 node_modules/

@@ -203,7 +203,9 @@ async def callback_selection(callback: types.CallbackQuery, state: FSMContext):
         except Exception as e:
             system_logger.warning(f"Selection restart failed: {e}")
 
-    elif action == "a" and current == SelectionState.step_a:
+    # current is None — старт из «📚 Шпаргалки»: cheat:selection показывает
+    # первый экран без set_state, FSM подхватывается первым выбором sel:a:*
+    elif action == "a" and current in (None, SelectionState.step_a):
         _sel_log(callback, "step_a", arg)
         if arg == "unknown":
             await _sel_show_step_drone(callback, state)

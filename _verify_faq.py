@@ -1,4 +1,4 @@
-"""Проверка handlers/faq.py («❓ FAQ», поиск) + data/faq.json.
+"""Проверка handlers/faq.py («❓ FAQ», поиск) + таблиц faq_* (перенос из data/faq.json).
 
 Запуск: .venv\\Scripts\\python.exe _verify_faq.py
 """
@@ -20,6 +20,8 @@ import handlers.faq as faq  # noqa: E402
 from aiogram.fsm.context import FSMContext  # noqa: E402
 from aiogram.fsm.storage.base import StorageKey  # noqa: E402
 from aiogram.fsm.storage.memory import MemoryStorage  # noqa: E402
+from db import close_db, init_db  # noqa: E402
+from db.engine import init_engine  # noqa: E402
 from keyboards import MAIN_BUTTONS, main_kb  # noqa: E402
 
 
@@ -62,6 +64,10 @@ def _cb(data):
 async def main():
     ok = []
 
+    # Изолированная БД в памяти: таблицы + первичный перенос FAQ из JSON
+    init_engine("sqlite+aiosqlite://")
+    await init_db()
+
     # --- 0) Роутер и меню -------------------------------------------------
     router_names = [getattr(r, "name", "") for r in bot.dp.sub_routers]
     assert "faq" in router_names, router_names
@@ -72,14 +78,15 @@ async def main():
     faq_idx = next(i for i, x in enumerate(subs) if x is faq.router)
     fb_idx = next(i for i, x in enumerate(subs) if x is fallback_router)
     assert faq_idx < fb_idx, router_names
-    assert "❓ FAQ" in MAIN_BUTTONS, "нет кнопки в MAIN_BUTTONS"
+    # FAQ открывается из «📚 Шпаргалки» (cheat:faq): сама кнопка — в MAIN_BUTTONS
+    assert "📚 Шпаргалки" in MAIN_BUTTONS, "нет кнопки в MAIN_BUTTONS"
     kb_texts = [b.text for row in main_kb.keyboard for b in row]
-    assert "❓ FAQ" in kb_texts, kb_texts
-    assert "❓ FAQ" in calc.MENU_BUTTONS, "нет зеркала в калькуляторе"
+    assert "📚 Шпаргалки" in kb_texts, kb_texts
+    assert "📚 Шпаргалки" in calc.MENU_BUTTONS, "нет зеркала в калькуляторе"
     ok.append("router+menu")
 
-    # --- 1) Данные data/faq.json ------------------------------------------
-    cats = faq._load_faq()
+    # --- 1) Данные: таблицы faq_* (перенесены из data/faq.json) -----------
+    cats = await faq.get_categories()
     assert len(cats) >= 4, f"слишком мало категорий: {len(cats)}"
     total = sum(len(c["questions"]) for c in cats)
     assert 10 <= total <= 30, f"вопросов {total}, ждём 10–30"
@@ -88,7 +95,7 @@ async def main():
         assert c["questions"], f"пустая категория {c['name']}"
         for item in c["questions"]:
             assert item["q"] and item["a"], f"пустой q/a в «{c['name']}»"
-    ok.append(f"faq.json: {len(cats)} категорий, {total} вопросов")
+    ok.append(f"faq: {len(cats)} категорий, {total} вопросов")
 
     # --- 2) Поиск: ранжирование и регистр ----------------------------------
     m = faq._find("гарантия", cats)
@@ -209,6 +216,7 @@ async def main2(ok, cats, state):
 
     print("\nOK:", ", ".join(ok))
     print(f"Всего проверок: {len(ok)} блоков — все пройдены.")
+    await close_db()
 
 
 if __name__ == "__main__":
