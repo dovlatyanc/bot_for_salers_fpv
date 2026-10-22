@@ -54,6 +54,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from db import followups as followups_db, settings as settings_db
 from keyboards import MENU_EXIT_BUTTONS
+from utils.ui import safe_answer
 
 router = Router(name="followup")
 
@@ -633,7 +634,7 @@ async def callback_list(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     items = await get_active(callback.from_user.id)
     await _edit(callback, _render_list(items), _active_kb(items) if items else _main_kb())
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data == "fup:done_list")
@@ -641,7 +642,7 @@ async def callback_done_list(callback: types.CallbackQuery):
     items = await get_done(callback.from_user.id)
     _log(callback.from_user.id, "followup_done_view", {"count": len(items)})
     await _edit(callback, _render_done(items), _done_kb(items))
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data == "fup:cancel")
@@ -649,7 +650,7 @@ async def callback_cancel(callback: types.CallbackQuery, state: FSMContext):
     _log(callback.from_user.id, "followup_cancel", {})
     await state.clear()
     await _edit(callback, "❌ Напоминания закрыты.", None)
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data == "fup:new")
@@ -664,7 +665,7 @@ async def callback_new(callback: types.CallbackQuery, state: FSMContext):
         "Без срока — тоже сохраню (в группе «Без срока»).",
         _prompt_kb(),
     )
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 # ---------- отметки: done / undone / delete ----------
@@ -672,36 +673,36 @@ async def callback_new(callback: types.CallbackQuery, state: FSMContext):
 async def callback_done(callback: types.CallbackQuery):
     item_id = _item_id(callback.data)
     if item_id is None or not await mark_done(callback.from_user.id, item_id):
-        await callback.answer("Напоминание не найдено", show_alert=True)
+        await safe_answer(callback, "Напоминание не найдено", show_alert=True)
         return
     _log(callback.from_user.id, "followup_done", {"id": item_id})
     items = await get_active(callback.from_user.id)
     await _edit(callback, _render_list(items), _active_kb(items) if items else _main_kb())
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data.startswith("fup:undone:"))
 async def callback_undone(callback: types.CallbackQuery):
     item_id = _item_id(callback.data)
     if item_id is None or not await reopen(callback.from_user.id, item_id):
-        await callback.answer("Напоминание не найдено", show_alert=True)
+        await safe_answer(callback, "Напоминание не найдено", show_alert=True)
         return
     _log(callback.from_user.id, "followup_reopen", {"id": item_id})
     items = await get_done(callback.from_user.id)
     await _edit(callback, _render_done(items), _done_kb(items))
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data.startswith("fup:del:"))
 async def callback_del(callback: types.CallbackQuery):
     item_id = _item_id(callback.data)
     if item_id is None or not await delete_followup(callback.from_user.id, item_id):
-        await callback.answer("Напоминание не найдено", show_alert=True)
+        await safe_answer(callback, "Напоминание не найдено", show_alert=True)
         return
     _log(callback.from_user.id, "followup_delete", {"id": item_id})
     items = await get_done(callback.from_user.id)
     await _edit(callback, _render_done(items), _done_kb(items))
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 # ============================================================

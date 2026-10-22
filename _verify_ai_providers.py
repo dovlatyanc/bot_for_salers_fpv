@@ -113,6 +113,10 @@ class FakeOkProvider(AIProvider):
     def from_config(cls):
         return cls()
 
+    @property
+    def is_configured(self):
+        return True
+
     async def ask(self, question):
         return f"ответ на: {question}"
 
@@ -341,17 +345,23 @@ async def _run_tests():
         yx.POLL_INTERVAL = 3.0
         yx.RETRY_BACKOFF = 1.5
 
-    # --- Фасад ai.ask_ai ---
+    # --- Фасад ai.ask_ai (retry + circuit breaker + деградация) ---
+    import services.ai_providers.resilience as rs
     orig = ai_facade.get_ai_provider
     try:
+        rs.reset_breaker()
+        rs.RETRY_BACKOFF = 0
         ai_facade.get_ai_provider = lambda: FakeOkProvider()
         assert await ai_facade.ask_ai("тест") == "ответ на: тест"
 
         ai_facade.get_ai_provider = lambda: FakeFailProvider()
-        assert await ai_facade.ask_ai("тест") == "Ошибка X"
-        print("[OK] фасад ask_ai(): делегирует провайдеру и превращает ошибку в текст")
+        assert await ai_facade.ask_ai("тест") in rs.AI_FALLBACK_PHRASES
+        print("[OK] фасад ask_ai(): делегирует провайдеру, ошибку после ретраев "
+              "превращает в случайную фразу-заглушку из AI_FALLBACK_PHRASES")
     finally:
         ai_facade.get_ai_provider = orig
+        rs.RETRY_BACKOFF = 0.5
+        rs.reset_breaker()
 
     # --- from_config читает конфиг приложения ---
     cfg_provider = CloudflareAIProvider.from_config()

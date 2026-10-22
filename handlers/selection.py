@@ -14,6 +14,7 @@ from data import (
 from keyboards import SEARCH_HEADER_TEXT, _build_search_kb
 from states import SelectionState
 from utils import _apply_filters
+from utils.ui import safe_answer
 
 router = Router()
 
@@ -332,4 +333,4 @@ async def callback_selection(callback: types.CallbackQuery, state: FSMContext):
         except Exception as e:
             system_logger.warning(f"Selection to-search failed: {e}")
 
-    await callback.answer()
+    await safe_answer(callback, )

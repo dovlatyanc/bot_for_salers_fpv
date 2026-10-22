@@ -38,6 +38,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from db import calc_history as history_db, prices as prices_db
 from keyboards import MENU_EXIT_BUTTONS
+from utils.ui import safe_answer
 
 router = Router(name="calculator")
 
@@ -464,13 +465,13 @@ async def callback_choose_model(callback: types.CallbackQuery, state: FSMContext
         text = (f"{head}\n\n"
                 "Шаг 2/3 — закупочная цена. Введите число, например <b>28000</b>.")
     await _edit(callback, text, _cost_kb(base))
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data.startswith("calc:model:"))
 async def callback_choose_model_stale(callback: types.CallbackQuery):
     # NEW: нажатие после сброса состояния (в старом сообщении) — без падений
-    await callback.answer("Сессия устарела — нажмите «💰 Калькулятор» заново", show_alert=True)
+    await safe_answer(callback, "Сессия устарела — нажмите «💰 Калькулятор» заново", show_alert=True)
 
 
 @router.callback_query(F.data == "calc:cost:base", MarginState.waiting_for_cost)
@@ -481,7 +482,7 @@ async def callback_cost_base(callback: types.CallbackQuery, state: FSMContext):
     info = (await get_price(code)) if code else None
     base = info.get("cost") if info else None
     if base is None:
-        await callback.answer("Базовая цена не найдена — введите число", show_alert=True)
+        await safe_answer(callback, "Базовая цена не найдена — введите число", show_alert=True)
         return
     await state.update_data(cost=round(float(base), 2))
     await state.set_state(MarginState.waiting_for_price)
@@ -496,12 +497,12 @@ async def callback_cost_base(callback: types.CallbackQuery, state: FSMContext):
         "Шаг 3/3 — цена продажи клиенту.\nВведите сумму:",
         _cancel_kb(),
     )
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data == "calc:cost:base")
 async def callback_cost_base_stale(callback: types.CallbackQuery):
-    await callback.answer("Сессия устарела — нажмите «💰 Калькулятор» заново", show_alert=True)
+    await safe_answer(callback, "Сессия устарела — нажмите «💰 Калькулятор» заново", show_alert=True)
 
 
 @router.callback_query(F.data == "calc:restart")
@@ -511,12 +512,12 @@ async def callback_restart(callback: types.CallbackQuery, state: FSMContext):
     prices = await get_prices()
     if not prices:
         await _edit(callback, "⚠️ Прайс-лист пуст.", None)
-        await callback.answer()
+        await safe_answer(callback, )
         return
     _log(callback.from_user.id, "calc_restart", {})
     await state.set_state(MarginState.choosing_model)
     await _edit(callback, "🧮 <b>Калькулятор маржи</b>\n\nШаг 1/3 — выберите модель АКБ:", _models_kb(prices))
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(
@@ -527,12 +528,12 @@ async def callback_cancel(callback: types.CallbackQuery, state: FSMContext):
     _log(callback.from_user.id, "calc_cancel", {"via": "button"})
     await state.clear()
     await _edit(callback, "❌ Калькулятор закрыт.", None)
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data == "calc:cancel")
 async def callback_cancel_stale(callback: types.CallbackQuery):
-    await callback.answer("Калькулятор уже закрыт")
+    await safe_answer(callback, "Калькулятор уже закрыт")
 
 
 # ============================================================
@@ -591,7 +592,8 @@ async def process_price_input(message: types.Message, state: FSMContext):
     except (TypeError, ValueError):
         cost = 0.0
     if cost <= 0:
-        # NEW: сессия потеряна (перезапуск бота на MemoryStorage) — честно перезапускаем сценарий
+        # Сессия без закупочной цены (диалог из эпохи MemoryStorage, сбой
+        # записи FSM и т.п.) — честно перезапускаем сценарий
         await state.clear()
         await message.answer("Сессия расчёта устарела. Нажмите «💰 Калькулятор» заново.")
         return

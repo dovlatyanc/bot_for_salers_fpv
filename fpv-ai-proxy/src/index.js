@@ -289,6 +289,15 @@ export default {
         }
       );
 
+      // ПОСТ-ОБРАБОТКА: деградация модели — зацикливание на маркере секции.
+      // Повторные ПУСТЫЕ "<b>💡 Вывод:</b>" удаляем (остаются только маркеры
+      // с контентом), затем срезаем пустые маркеры в хвосте ответа.
+      answer = answer.replace(
+        /(<b>💡 Вывод:<\/b>)([\s\S]*?)(?=<b>💡 Вывод:<\/b>|$)/gi,
+        (match, head, content) => (content.trim() ? match : "")
+      );
+      answer = answer.replace(/(?:\s*<b>💡 Вывод:<\/b>)+\s*$/i, "").trimEnd();
+
       // ПОСТ-ОБРАБОТКА: универсальная очистка зацикливаний на "золотых фразах"
       answer = answer.replace(
         /[\s\S]*?(?:золот(?:ые|ых|ыми)\s+фраз(?:ы|ам|ами)[\s\S]*)$/i, ""
@@ -301,6 +310,23 @@ export default {
 
       // ФИНАЛЬНАЯ обрезка по лимиту символов
       answer = trimAnswer(answer, MAX_LEN);
+
+      // ПОСТ-ОБРАБОТКА: наружу не отдаём «ответ», который на самом деле
+      // ошибка бэкенда (невалидный ключ и т.п.) либо пуст после очистки:
+      // бот получит 502 и покажет менеджеру мягкую фразу-заглушку.
+      const errorLeak = /\b(unauthorized|unauthenticated|invalid api key|authentication error|quota exceeded|internal server error|bad gateway|service unavailable|gateway timeout)\b/i.test(answer);
+      const noContent = !answer.replace(/<[^>]+>/g, "").replace(/[\s…]/g, "").length;
+      if (errorLeak || noContent) {
+        return Response.json(
+          {
+            ok: false,
+            error: errorLeak
+              ? "AI model returned an error instead of an answer"
+              : "AI model produced no usable answer",
+          },
+          { status: 502 }
+        );
+      }
 
       return Response.json({ ok: true, answer: answer.trim(), model });
     } catch (error) {

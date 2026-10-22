@@ -30,12 +30,16 @@ system_logger = logging.getLogger("system")
 
 @dataclass(frozen=True)
 class SeedSources:
-    """Пути JSON-источников для первичного импорта (None — источник пропущен)."""
+    """Пути источников для первичного импорта (None — источник пропущен)."""
 
     followups: Path | None = None
     calc_history: Path | None = None
     prices: Path | None = None
     faq: Path | None = None
+    # CSV-выгрузка остатков 1С: грузится только при пустой таблице parts.
+    # Название файла датированное — это «текущая» выгрузка; последующие файлы
+    # загружаются через бота (тот же db.stock_import.import_stock_csv).
+    stock_csv: Path | None = None
 
 
 DEFAULT_SOURCES = SeedSources(
@@ -43,6 +47,7 @@ DEFAULT_SOURCES = SeedSources(
     calc_history=BASE_DIR / "config" / "calc_history.json",
     prices=BASE_DIR / "config" / "prices.json",
     faq=BASE_DIR / "data" / "faq.json",
+    stock_csv=BASE_DIR / "Остатки БАС 08.10.2026.csv",
 )
 
 

@@ -15,6 +15,7 @@ from aiogram import F, Router, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from data.objections import OBJECTIONS, OBJECTION_ORDER
+from utils.ui import safe_answer
 from utils.ui import (
     EDIT_SAFE_LIMIT,
     SEPARATOR,
@@ -190,7 +191,7 @@ async def callback_objections_list(callback: types.CallbackQuery):
     """obj:list — возврат к списку возражений."""
     _log_cb(callback, "objections_list", "list")
     await _show_list(callback.message, edit=True)
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data == "obj:stop")
@@ -198,14 +199,14 @@ async def callback_objections_stop(callback: types.CallbackQuery):
     """obj:stop — только стоп-возражения."""
     _log_cb(callback, "objections_stop", "stop")
     await _show_stop(callback.message, edit=True)
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data == "obj:full")
 async def callback_objections_full(callback: types.CallbackQuery):
     """obj:full — все возражения одним сообщением (plain-text)."""
     await _objection_full(callback)
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data.startswith("obj:"))
@@ -225,7 +226,7 @@ async def callback_objection(callback: types.CallbackQuery):
         await callback_objections_full(callback)
         return
     if oid not in OBJECTIONS:
-        await callback.answer("Возражение не найдено", show_alert=True)
+        await safe_answer(callback, "Возражение не найдено", show_alert=True)
         return
 
     _log_cb(callback, "objection_view", oid)
@@ -234,4 +235,4 @@ async def callback_objection(callback: types.CallbackQuery):
         reply_markup=_objection_kb(oid),
         warn_prefix="Objection view edit failed",
     )
-    await callback.answer()
+    await safe_answer(callback, )

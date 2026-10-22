@@ -1,0 +1,19 @@
+# ============================================================
+# FPV Sales Bot — watchdog (oneshot, запускается fpvbot-watchdog.timer).
+# deploy/watchdog.py проверяет юнит fpvbot + heartbeat; при зависании —
+# рестарт и уведомление админа. Активация (deploy/README.md, раздел 5):
+#   cp deploy/fpvbot-watchdog.service deploy/fpvbot-watchdog.timer /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now fpvbot-watchdog.timer
+# ============================================================
+[Unit]
+Description=FPV Sales Bot watchdog (liveness check + restart)
+Wants=network-online.target
+After=network-online.target fpvbot.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/fpvbot
+# Только stdlib — системный python3, независимо от venv проекта
+ExecStart=/usr/bin/python3 /root/fpvbot/deploy/watchdog.py
+SyslogIdentifier=fpvbot-watchdog

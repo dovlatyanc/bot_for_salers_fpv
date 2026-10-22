@@ -19,6 +19,7 @@ from config import bot, dialog_logger, system_logger
 from data import FILTER_LABELS
 from keyboards import SEARCH_HEADER_TEXT, _build_search_kb
 from utils import _apply_filters, get_row, send_model_card
+from utils.ui import safe_answer
 
 router = Router(name="search")
 
@@ -57,7 +58,7 @@ async def callback_search_model(callback: types.CallbackQuery):
     # MODIFIED: карточка через send_model_card (фото + подпись, если фото есть)
     await send_model_card(callback, model_code, back_kb, bot)
 
-    await callback.answer()
+    await safe_answer(callback, )
 
 # === МУЛЬТИ-ФИЛЬТР «🔎 Поиск» ===
 # NEW: точка входа в мульти-фильтр
@@ -153,4 +154,4 @@ async def callback_search(callback: types.CallbackQuery):
     except Exception as e:
         system_logger.warning(f"Search edit failed: {e}")
 
-    await callback.answer()
+    await safe_answer(callback, )

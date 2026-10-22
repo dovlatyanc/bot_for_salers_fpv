@@ -96,14 +96,18 @@ async def main():
     #    FSM-сценариев и регистрирует те же реализации — «🤖 AI-ассистент» и
     #    «📚 Шпаргалки» открываются прямо из сценария, а не съедаются как
     #    «выход в меню» (калькулятор: «Калькулятор закрыт» без раздела)
+    #    НОВОЕ (аудит 3.1–3.2): admin-роутер — первый (приоритет /stats и
+    #    FSM-команд админа), early_buttons — сразу за ним.
     import bot as bot_mod
-    from handlers import cheatsheets, early_buttons
+    from handlers import admin, cheatsheets, early_buttons
     subs = bot_mod.dp.sub_routers
-    assert subs[0] is early_buttons.router, [getattr(r, "name", None) for r in subs]
+    names = [getattr(r, "name", None) for r in subs]
+    assert subs[0] is admin.router, names
+    assert subs[1] is early_buttons.router, names
     callbacks = [h.callback for h in early_buttons.router.message.handlers]
     assert menu.button_ai_assistant in callbacks, callbacks
     assert cheatsheets.button_cheatsheets in callbacks, callbacks
-    print("[OK] early_buttons: «🤖 AI-ассистент» и «📚 Шпаргалки» раньше FSM-сценариев")
+    print("[OK] early_buttons: «🤖 AI-ассистент» и «📚 Шпаргалки» раньше FSM-сценариев (admin — первый)")
 
 
 asyncio.run(main())

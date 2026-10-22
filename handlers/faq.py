@@ -28,6 +28,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 from db import faq as faq_db
 from keyboards import MENU_EXIT_BUTTONS
+from utils.ui import safe_answer
 
 router = Router(name="faq")
 
@@ -231,7 +232,7 @@ async def callback_menu(callback: types.CallbackQuery, state: FSMContext) -> Non
     _log(callback.from_user.id, "faq_menu", {})
     categories = await get_categories()
     await _edit(callback, _render_main(categories), _main_kb(categories))
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data.startswith("faq:c:"))
@@ -239,16 +240,16 @@ async def callback_category(callback: types.CallbackQuery) -> None:
     """faq:c:<i> — список вопросов категории."""
     ci = _parse_index(callback.data, 2)
     if ci is None:
-        await callback.answer("Категория не найдена", show_alert=True)
+        await safe_answer(callback, "Категория не найдена", show_alert=True)
         return
     categories = await get_categories()
     if ci >= len(categories):
-        await callback.answer("Категория не найдена", show_alert=True)
+        await safe_answer(callback, "Категория не найдена", show_alert=True)
         return
     cat = categories[ci]
     _log(callback.from_user.id, "faq_category", {"name": cat["name"]})
     await _edit(callback, _render_category(cat), _category_kb(ci, cat))
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data.startswith("faq:q:"))
@@ -257,17 +258,17 @@ async def callback_question(callback: types.CallbackQuery) -> None:
     ci = _parse_index(callback.data, 2)
     qi = _parse_index(callback.data, 3)
     if ci is None or qi is None:
-        await callback.answer("Вопрос не найден", show_alert=True)
+        await safe_answer(callback, "Вопрос не найден", show_alert=True)
         return
     categories = await get_categories()
     if ci >= len(categories) or qi >= len(categories[ci]["questions"]):
-        await callback.answer("Вопрос не найден", show_alert=True)
+        await safe_answer(callback, "Вопрос не найден", show_alert=True)
         return
     cat = categories[ci]
     item = cat["questions"][qi]
     _log(callback.from_user.id, "faq_answer", {"q": item["q"]})
     await _edit(callback, _render_answer(cat, item), _answer_kb(ci))
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data == "faq:search")
@@ -279,7 +280,7 @@ async def callback_search(callback: types.CallbackQuery, state: FSMContext) -> N
                 "Введите слово или фразу одним сообщением, например:\n"
                 "<i>гарантия, мороз, юрлица, зарядка</i>",
                 _prompt_kb())
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.message(FaqState.waiting_for_query, F.text)
@@ -326,4 +327,4 @@ async def callback_cancel(callback: types.CallbackQuery, state: FSMContext) -> N
         await callback.message.edit_text("❌ FAQ закрыт. Выберите раздел в меню.")
     except Exception as e:
         system_logger.warning(f"faq cancel edit failed: {e}")
-    await callback.answer()
+    await safe_answer(callback, )

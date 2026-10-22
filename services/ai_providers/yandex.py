@@ -29,7 +29,8 @@ API (REST; аутентификация: Api-Key или IAM-токен):
 Особенности:
   • modelUri для yandexgpt / yandexgpt-32k требует версию /rc, а не /latest;
     для yandexgpt-lite допустим /latest. Учитывается в _model_uri().
-  • 429/5xx от Yandex Cloud — retry с экспоненциальным backoff.
+  • 429/5xx, таймауты и сетевые ошибки — retry внутри _request_json
+    (внешняя обёртка resilience.py не дублирует повторы, retries_internally).
   • При is_configured == False ask()/transcribe() бросают AIProviderError
     с текстом NOT_CONFIGURED_HINT — вызывающий код сам решает, показывать ли.
 """
@@ -78,6 +79,10 @@ class YandexGPTProvider(AIProvider):
     """Реализация AIProvider поверх YandexGPT + Yandex SpeechKit."""
 
     name = "yandex"
+
+    #: 429/5xx/таймауты/сетевые ошибки ретраятся внутри _request_json —
+    #: внешняя обёртка resilience.py повторы не дублирует.
+    retries_internally = True
 
     #: Параметры генерации. Для коуча-продажника 0.3–0.4 — меньше «фантазий»
     #: по цифрам и порогам; выше 0.7 — сильнее разброс.
@@ -181,6 +186,15 @@ class YandexGPTProvider(AIProvider):
                     await asyncio.sleep(RETRY_BACKOFF * attempt)
                     continue
                 raise AIProviderError(f"Yandex Cloud timeout: {timeout} с") from e
+            except (aiohttp.ClientError, OSError) as e:
+                # Сетевые сбои (DNS, обрыв соединения, SSL) — тоже переходящие:
+                # без этой ветки они утекали бы из ask()/transcribe() сырыми
+                # исключениями aiohttp мимо контракта AIProviderError.
+                last_error = e
+                if attempt < RETRY_ATTEMPTS:
+                    await asyncio.sleep(RETRY_BACKOFF * attempt)
+                    continue
+                raise AIProviderError(f"Yandex Cloud network: {e}") from e
         raise AIProviderError(str(last_error) if last_error else "Yandex Cloud error")
 
     async def ask(self, question: str) -> str:

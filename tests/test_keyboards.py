@@ -22,7 +22,7 @@ def test_main_kb_structure():
     rows = [[b.text for b in row] for row in main_kb.keyboard]
     assert rows == [list(row) for row in MAIN_KEYBOARD_LAYOUT]
     texts = [t for row in rows for t in row]
-    assert len(rows) == 2 and len(texts) == 8  # «📊 ТТХ» переехала в «Шпаргалки»
+    assert len(rows) == 3 and len(texts) == 9  # «🛠 Конструктор дронов» — 3-й ряд (Этап 9)
     for must in ("💰 Калькулятор", "📊 История расчётов", "📚 Шпаргалки"):
         assert must in texts, must
     # справочные разделы и каталог «📊 ТТХ» собраны под «📚 Шпаргалки»

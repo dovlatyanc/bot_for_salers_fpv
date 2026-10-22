@@ -33,7 +33,8 @@
                            FSM FaqState для поиска; таблицы faq_categories/faq_questions пакета db);
   handlers/selection.py  — экспресс-подбор «🧠 Подбор» (FSM SelectionState, "sel:");
   handlers/search.py     — мульти-фильтр «🔎 Поиск» (callback "srch:", "srchm:");
-  handlers/build.py      — «🔧 Своя сборка» (FSM BuildState, "build_conn:");
+  handlers/build.py      — «🔧 Своя сборка» (FSM BuildState, "build_conn:"): ввод
+                           14S12P или параметров («12В 12000мА·ч», «8S», «90А») → S/P;
   handlers/voice.py      — голосовые сообщения (распознавание через AI-прокси);
   handlers/fallback.py   — fallback: любой текст → AI, неизвестные команды, прочий контент.
 

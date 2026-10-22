@@ -1,0 +1,12 @@
+[Unit]
+Description=FPV Sales Bot: запуск watchdog каждые 4 часа
+
+[Timer]
+# 00:20, 04:20, 08:20, 12:20, 16:20, 20:20 (время сервера);
+# при желании изменить интервал — см. systemd.timer и OnCalendar
+OnCalendar=*-*-* 00/4:20:00
+# если сервер был выключен в момент запуска — догнать один раз при старте
+Persistent=true
+
+[Install]
+WantedBy=timers.target

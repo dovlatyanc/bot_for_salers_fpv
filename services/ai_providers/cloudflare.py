@@ -72,6 +72,18 @@ class CloudflareAIProvider(AIProvider):
                             body=body,
                         )
                     data = await resp.json()
+                    # Явная ошибка в теле при HTTP 200 (старая/другая версия
+                    # прокси отвечает {"ok": false, "error": ...}) — тоже сбой:
+                    # бросаем исключение, чтобы сработали retry/breaker, и
+                    # менеджер получил фразу-заглушку, а не текст ошибки.
+                    if data.get("ok") is False or data.get("error"):
+                        err = str(data.get("error") or "proxy error").strip()[:500]
+                        system_logger.error(
+                            f"AI proxy reported error with HTTP 200: {err}"
+                        )
+                        raise AIProviderError(
+                            f"AI proxy reported error: {err}", status=resp.status
+                        )
                     answer = data.get("answer")
                     if not answer:
                         system_logger.warning("AI returned empty answer")

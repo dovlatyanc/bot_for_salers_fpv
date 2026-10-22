@@ -22,9 +22,9 @@ DIST = ROOT / "dist"
 
 # Каталоги, которые целиком не попадают в архив (проверяется по частям пути)
 EXCLUDE_DIRS = {".git", ".venv", "__pycache__", ".pytest_cache",
-                "node_modules", "dist", "backups"}
+                "node_modules", "dist", "backups", "logs"}
 # Файлы-секреты и runtime-данные: по имени или маске от корня архива
-EXCLUDE_NAMES = {".env", ".dev.vars"}
+EXCLUDE_NAMES = {".env", ".dev.vars", "bot_system.log"}
 EXCLUDE_GLOBS = ("*.log", "*.py[cod]", "data/bot.db*", "data/backups/*",
                  "config/calc_history.json")
 
@@ -37,20 +37,25 @@ def excluded(rel_parts: tuple, name: str, posix: str) -> bool:
     return any(fnmatch.fnmatch(posix, glob) for glob in EXCLUDE_GLOBS)
 
 
-def main() -> None:
-    stamp = time.strftime("%Y%m%d_%H%M%S")
-    name = f"fpvbot_{stamp}.zip"
-    DIST.mkdir(exist_ok=True)
-    target = DIST / name
-
-    files = [
-        (path, path.relative_to(ROOT))
-        for path in sorted(ROOT.rglob("*"))
+def collect_files(root: Path) -> list[tuple[Path, Path]]:
+    """(абсолютный путь, относительный путь) всех файлов, попадающих в архив."""
+    return [
+        (path, path.relative_to(root))
+        for path in sorted(root.rglob("*"))
         if path.is_file()
-        and not excluded(path.relative_to(ROOT).parts[:-1],
-                         path.name, path.relative_to(ROOT).as_posix())
+        and not excluded(path.relative_to(root).parts[:-1],
+                         path.name, path.relative_to(root).as_posix())
     ]
 
+
+def build_archive(root: Path, target: Path) -> list[str]:
+    """Собирает zip из дерева root в target. Возвращает список имён в архиве.
+
+    После сборки валидирует: в архиве не должно быть .env, *.log, *.pyc,
+    data/bot.db*, data/backups/*, __pycache__ — иначе архив удаляется и
+    поднимается RuntimeError.
+    """
+    files = collect_files(root)
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
         for path, rel in files:
             zf.write(path, rel.as_posix())
@@ -59,7 +64,8 @@ def main() -> None:
     # и секретами быть не должно — валидируем содержимое после сборки.
     forbidden = []
     with zipfile.ZipFile(target) as zf:
-        for entry in zf.namelist():
+        names = zf.namelist()
+        for entry in names:
             if (entry == ".env" or entry.endswith((".log", ".pyc"))
                     or fnmatch.fnmatch(entry, "data/bot.db*")
                     or fnmatch.fnmatch(entry, "data/backups/*")
@@ -67,7 +73,22 @@ def main() -> None:
                 forbidden.append(entry)
     if forbidden:
         target.unlink()
-        sys.exit(f"[release] В архив попали запрещённые файлы — удалён: {forbidden}")
+        raise RuntimeError(
+            f"[release] В архив попали запрещённые файлы — удалён: {forbidden}"
+        )
+    return names
+
+
+def main() -> None:
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    name = f"fpvbot_{stamp}.zip"
+    DIST.mkdir(exist_ok=True)
+    target = DIST / name
+
+    try:
+        files = build_archive(ROOT, target)
+    except RuntimeError as e:
+        sys.exit(str(e))
 
     digest = hashlib.sha256(target.read_bytes()).hexdigest()
     print(f"[release] OK: {target}")

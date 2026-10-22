@@ -5,7 +5,9 @@ from aiogram import F, Router, types
 
 from config import bot, dialog_logger, system_logger
 from ai import handle_ai_request
-from services.ai_providers import AIProviderError, get_ai_provider
+from db import counters
+from services.ai_providers import AIProviderError
+from services.ai_providers.resilience import get_resilient_provider
 
 router = Router()
 
@@ -32,15 +34,29 @@ async def process_voice(message: types.Message):
         file_bytes_io = await bot.download_file(file.file_path)
         file_bytes = file_bytes_io.read()
 
-        # Распознавание речи через активного AI-провайдера (см. AI_PROVIDER в .env).
+        # Распознавание речи через активного AI-провайдера (см. AI_PROVIDER в .env)
+        # в обёртке resilience: retry + circuit breaker (при разомкнутой цепи —
+        # мгновенная фраза-заглушка вместо многоминутного ожидания).
         try:
-            recognized_text = await get_ai_provider().transcribe(file_bytes)
+            recognized_text = await get_resilient_provider().transcribe(file_bytes)
         except AIProviderError as e:
             detail = (e.body or str(e)).strip()[:100]
             system_logger.error(f"Voice recognition error: {e.status} - {detail}")
-            status_prefix = f"{e.status}\n" if e.status else ""
-            await thinking.edit_text(f"Ошибка распознавания: {status_prefix}{detail}")
+            if e.friendly:
+                # Деградация resilience (разомкнутая цепь): текст ошибки —
+                # готовая дружелюбная фраза-заглушка (случайная, см. prompts.py)
+                await thinking.edit_text(str(e))
+            else:
+                status_prefix = f"{e.status}\n" if e.status else ""
+                await thinking.edit_text(f"Ошибка распознавания: {status_prefix}{detail}")
             return
+
+        # Обращение к распознаванию состоялось — учитываем в /stats (п. 3.1).
+        # Нефатально: сбой БД не должен сорвать показ распознанного текста.
+        try:
+            await counters.incr("ai_voice")
+        except Exception as e:
+            system_logger.warning(f"AI voice counter not written: {e}")
 
         if recognized_text:
             await thinking.delete()

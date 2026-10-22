@@ -8,6 +8,8 @@
   prices        → {код: {"cost", "cash", "wholesale", "vat5", "vat22", "profit"}}
   faq_*         → [{"name", "questions": [{"q", "a"}]}]
   settings      → ключ → значение (str)
+  users / daily_counters — аналитика /stats (п. 3.1): touch-учёт менеджеров
+                   и дневные счётчики обращений к AI; dict-формат не нужен.
 
 Все методы async и берут сессию из db.engine.get_sessionmaker().
 """
@@ -15,18 +17,21 @@
 import logging
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from db.engine import get_sessionmaker
+from db.retry import retry_on_db_lock
 from db.models import (
     BotSetting,
     CalcEntry,
+    DailyCounter,
     FaqCategory,
     FaqQuestion,
     FollowUp,
     FollowUpReminder,
     Price,
+    User,
 )
 
 system_logger = logging.getLogger("system")
@@ -74,6 +79,7 @@ def _followup_dict(it: FollowUp) -> dict:
 class FollowUpRepository:
     """Таблица follow_ups + адресаты/сроки для утренней сводки."""
 
+    @retry_on_db_lock()
     async def add(self, user_id: int, text: str, due: date | None,
                   due_at: datetime | None = None) -> dict:
         """Создаёт напоминание и возвращает его dict (id — автоинкремент).
@@ -98,6 +104,7 @@ class FollowUpRepository:
         """Возвращает в активные; False — не найдено или уже активно."""
         return await self._set_done(user_id, item_id, False)
 
+    @retry_on_db_lock()
     async def _set_done(self, user_id: int, item_id: int, done: bool) -> bool:
         async with get_sessionmaker()() as session:
             item = await session.get(FollowUp, item_id)
@@ -108,6 +115,7 @@ class FollowUpRepository:
             await session.commit()
             return True
 
+    @retry_on_db_lock()
     async def delete(self, user_id: int, item_id: int) -> bool:
         """Удаляет напоминание менеджера; False — чужое или не найдено."""
         async with get_sessionmaker()() as session:
@@ -208,6 +216,7 @@ class FollowUpRepository:
             )
             return row is not None
 
+    @retry_on_db_lock()
     async def mark_reminder_sent(self, follow_up_id: int, minutes: int) -> None:
         """Фиксирует отправку «за minutes» (повтор — no-op по уникальному ключу)."""
         async with get_sessionmaker()() as session:
@@ -226,6 +235,7 @@ class FollowUpRepository:
 class CalcHistoryRepository:
     """Таблица calc_entries: завершённые расчёты менеджеров."""
 
+    @retry_on_db_lock()
     async def add(self, user_id: int, entry: dict, keep_last: int | None = None) -> None:
         """Сохраняет расчёт; keep_last — оставить только N свежих на менеджера."""
         async with get_sessionmaker()() as session:
@@ -242,6 +252,7 @@ class CalcHistoryRepository:
         if keep_last is not None:
             await self._prune(user_id, keep_last)
 
+    @retry_on_db_lock()
     async def _prune(self, user_id: int, keep_last: int) -> None:
         """Удаляет у менеджера всё, кроме keep_last последних расчётов."""
         async with get_sessionmaker()() as session:
@@ -279,6 +290,13 @@ class CalcHistoryRepository:
                 for r in rows
             ]
 
+    async def count_since(self, since: datetime) -> int:
+        """Расчёты, завершённые с момента since (для /stats: «за сегодня»)."""
+        async with get_sessionmaker()() as session:
+            return (await session.execute(
+                select(func.count()).select_from(CalcEntry).where(CalcEntry.ts >= since)
+            )).scalar_one()
+
 
 class PriceRepository:
     """Таблица prices: {код модели: ступени прайса}."""
@@ -312,6 +330,7 @@ class PriceRepository:
             entry = self._entry(r)
             return entry if entry.get("cost", 0) > 0 else None
 
+    @retry_on_db_lock()
     async def upsert(self, code: str, values: dict) -> None:
         """Создаёт/обновляет запись прайса (используется сидом)."""
         async with get_sessionmaker()() as session:
@@ -323,6 +342,23 @@ class PriceRepository:
                 value = values.get(key)
                 setattr(row, key, float(value) if value is not None else None)
             await session.commit()
+
+    @retry_on_db_lock()
+    async def set_field(self, code: str, field: str, value: float) -> bool:
+        """Обновляет одну ступень прайса модели (/update_price).
+
+        False — модели нет в таблице. field проверяется по PRICE_COLUMNS
+        (cost/cash/wholesale/vat5/vat22/profit), прочие поля — ValueError.
+        """
+        if field not in PRICE_COLUMNS:
+            raise ValueError(f"Неизвестная ступень прайса: {field}")
+        async with get_sessionmaker()() as session:
+            row = await session.get(Price, code)
+            if row is None:
+                return False
+            setattr(row, field, float(value))
+            await session.commit()
+            return True
 
 
 # ============================================================
@@ -357,6 +393,44 @@ class FaqRepository:
             questions = (await session.execute(select(FaqQuestion))).scalars().all()
             return len(cats), len(questions)
 
+    @retry_on_db_lock()
+    async def add_question(self, category_name: str, q: str, a: str) -> tuple[bool, int]:
+        """Добавляет вопрос в категорию FAQ (/add_faq); категория создаётся при отсутствии.
+
+        Категория ищется без учёта регистра («общие» == «Общие»), позиция новой
+        категории/вопроса — в конец списка (max(position) + 1), как у сида.
+        Возвращает (создана_ли_новая_категория, всего_вопросов_в_категории).
+        """
+        name = (category_name or "").strip()
+        if not name:
+            raise ValueError("Название категории не может быть пустым")
+        if not (q or "").strip() or not (a or "").strip():
+            raise ValueError("Вопрос и ответ не могут быть пустыми")
+        async with get_sessionmaker()() as session:
+            cats = (await session.scalars(select(FaqCategory))).all()
+            cat = next(
+                (c for c in cats if c.name.strip().casefold() == name.casefold()),
+                None,
+            )
+            created = False
+            if cat is None:
+                cat = FaqCategory(name=name, position=max(
+                    (c.position for c in cats), default=-1) + 1)
+                session.add(cat)
+                await session.flush()          # нужен id до записи вопроса
+                created = True
+            questions = (await session.scalars(
+                select(FaqQuestion).where(FaqQuestion.category_id == cat.id)
+            )).all()
+            session.add(FaqQuestion(
+                category_id=cat.id,
+                position=max((x.position for x in questions), default=-1) + 1,
+                q=q.strip(),
+                a=a.strip(),
+            ))
+            await session.commit()
+            return created, len(questions) + 1
+
 
 # ============================================================
 # KV-настройки: settings
@@ -369,6 +443,7 @@ class SettingsRepository:
             row = await session.get(BotSetting, key)
             return row.value if row else None
 
+    @retry_on_db_lock()
     async def set(self, key: str, value: str | None) -> None:
         async with get_sessionmaker()() as session:
             row = await session.get(BotSetting, key)
@@ -377,6 +452,131 @@ class SettingsRepository:
                 session.add(row)
             row.value = value
             await session.commit()
+
+
+# ============================================================
+# Пользователи бота: users (аналитика /stats)
+# ============================================================
+class UserRepository:
+    """Таблица users: кто пользуется ботом и когда был активен последний раз."""
+
+    @retry_on_db_lock()
+    async def touch(self, user_id: int, username: str | None = None,
+                    first_name: str | None = None) -> bool:
+        """INSERT OR IGNORE + обновление last_seen_at; True — пользователь новый.
+
+        Вызывается middleware UserTrackingMiddleware при каждом сообщении/нажатии.
+        Имя и ник освежаются (сменил — видно в аналитике), is_active поднимается
+        обратно в True при любом касании.
+        """
+        async with get_sessionmaker()() as session:
+            row = await session.get(User, user_id)
+            now = datetime.now()
+            if row is None:
+                session.add(User(
+                    user_id=user_id, username=username, first_name=first_name,
+                    created_at=now, last_seen_at=now, is_active=True,
+                ))
+                await session.commit()
+                return True
+            row.last_seen_at = now
+            row.is_active = True
+            if username:
+                row.username = username
+            if first_name:
+                row.first_name = first_name
+            await session.commit()
+            return False
+
+    async def count_all(self) -> int:
+        """Всего пользователей, заходивших в бота хоть раз."""
+        async with get_sessionmaker()() as session:
+            return (await session.execute(
+                select(func.count()).select_from(User)
+            )).scalar_one()
+
+    async def count_active_since(self, since: datetime) -> int:
+        """Пользователей с last_seen_at >= since (для /stats: «за 7 дней»)."""
+        async with get_sessionmaker()() as session:
+            return (await session.execute(
+                select(func.count()).select_from(User)
+                .where(User.last_seen_at >= since)
+            )).scalar_one()
+
+
+# ============================================================
+# Дневные счётчики метрик: daily_counters (аналитика /stats)
+# ============================================================
+class DailyCounterRepository:
+    """Таблица daily_counters: суточные счётчики ('ai_ask', 'ai_voice')."""
+
+    @retry_on_db_lock()
+    async def incr(self, metric: str, amount: int = 1, day: date | None = None) -> None:
+        """Атомарно увеличивает счётчик метрики за день (строка создаётся при отсутствии).
+
+        Прибавление идёт одним UPDATE value = value + amount — конкурентные
+        обработчики не теряют приращения. Гонка «строки ещё нет у обоих» гасится
+        повторным UPDATE после IntegrityError (PK day+metric).
+        """
+        day = day or date.today()
+        async with get_sessionmaker()() as session:
+            result = await session.execute(
+                update(DailyCounter)
+                .where(DailyCounter.day == day, DailyCounter.metric == metric)
+                .values(value=DailyCounter.value + amount)
+            )
+            if result.rowcount:
+                await session.commit()
+                return
+            session.add(DailyCounter(day=day, metric=metric, value=amount))
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                await session.execute(
+                    update(DailyCounter)
+                    .where(DailyCounter.day == day, DailyCounter.metric == metric)
+                    .values(value=DailyCounter.value + amount)
+                )
+                await session.commit()
+
+    async def value(self, metric: str, day: date | None = None) -> int:
+        """Значение счётчика за день (по умолчанию — сегодня); нет строки — 0."""
+        day = day or date.today()
+        async with get_sessionmaker()() as session:
+            row = await session.get(DailyCounter, (day, metric))
+            return int(row.value) if row else 0
+
+
+# ============================================================
+# «🛠 Конструктор дронов» (ЭТАП 4): фасады вынесены в db.repositories_builder —
+# с ними этот файл превысил бы ~700 строк. Реэкспорт, чтобы хендлеры могли
+# импортировать всё из db.repositories:
+#     from db.repositories import list_parts, add_alias, save_draft, ...
+# ============================================================
+from db.repositories_builder import (  # noqa: E402,F401
+    add_alias,
+    add_compat_rule,
+    count_by_category,
+    delete_alias,
+    delete_draft,
+    diff_snapshots,
+    get_available_qty,
+    get_draft,
+    get_part,
+    get_part_by_id,
+    get_recipe,
+    get_snapshot_rows,
+    list_aliases,
+    list_compat_rules,
+    list_drafts,
+    list_parts,
+    list_recipes,
+    list_snapshots,
+    save_draft,
+    seed_recipes,
+    set_compat_rule_active,
+)
 
 
 

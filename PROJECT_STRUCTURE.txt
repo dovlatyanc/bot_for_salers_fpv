@@ -1,8 +1,33 @@
 ================================================================
 FPV SALES BOT — ЛОГИКА И СТРУКТУРА ПРОЕКТА
 ================================================================
-Снимок: 17.09.2026, состояние после фикса навигации «📚 Шпаргалки»
-(роутер early_buttons + callback cheat:menu; pytest: 154 passed).
+Снимок: 18.09.2026, персистентный FSM вместо MemoryStorage (db/fsm_storage.py,
+таблица user_states) + retry записи при блокировке SQLite (db/retry.py) + пул
+дружелюбных фраз-заглушек деградации AI (AI_FALLBACK_PHRASES в prompts.py,
+аудит п. 2.3) поверх отказоустойчивости AI (retry + circuit breaker + /health
+в resilience.py) и серверного watchdog (deploy/watchdog.py).
+НОВОЕ (пп. 3.1–3.2): таблица users + UserTrackingMiddleware (учёт менеджеров),
+админ-команды /stats (аналитика), /add_faq и /update_price (CRUD FAQ/прайса
+прямо в боте, handlers/admin.py).
+НОВОЕ («Своя сборка»): умный ввод конфигурации — «12В 12000мА·ч», «8S»,
+«12000мА·ч» или «90А» (латиница или кириллица) → бот сам переводит параметры
+в S/P и доспрашивает недостающее (handlers/build.py).
+НОВОЕ («🛠 Конструктор дронов», Этапы 1–7, раздел 6а): FSM-сборка борта по
+13 слотам из боевой БД остатков (классификация CSV 1С, подбор кандидатов,
+проверка совместимости, черновики) + ЭТАП 7: heartbeat в bot.py, admin-роутер
+первым, E2E-тесты; ПЕРВЫЙ ПОЛНОСТЬЮ ЗЕЛЁНЫЙ ПРОГОН: pytest 490 passed / 0 failed.
+НОВОЕ (ЭТАП 8, админ-контур конструктора, раздел 6а): /load_stock, 
+/classify_pending + /add_alias, /aliases / /del_alias, /compat_rules
+(toggle + FSM-добавление), /stock_stats, /reclassify, блок «🛠 Конструктор»
+в /stats; pytest 511 passed / 0 failed.
+НОВОЕ (ЭТАП 9, качество каталога): /reclassify — переклассификация всех
+parts по актуальным правилам (reclassify_all_parts, идемпотентна); выбор
+деталей в «Конструкторе» по int parts.id (ключи-имена не влезают в лимит
+Telegram 64 байта на callback_data).
+НОВОЕ (ЭТАП 10, серийный режим «Конструктора», раздел 6а): 12 производственных
+рецептов (data/builder/recipes.py, таблица recipes, сид в init_db) + защита
+L1–L4 (services/builder/recipes.py) в свободной сборке и /recipes у админа;
+pytest 563 passed / 0 failed.
 
 1. НАЗНАЧЕНИЕ И СТЕК
 --------------------
@@ -12,7 +37,7 @@ Telegram-бот для продавцов FPV-дронов и комплекту
     и раздел «Каталог моделей» в «📚 Шпаргалках»);
   • 🧠 Подбор — экспресс-подбор АКБ (дрон → разъём → ёмкость);
   • 🔎 Поиск — мульти-фильтр по каталогу;
-  • 🔧 Своя сборка — FSM «конфигурация → разъём»;
+  • 🔧 Своя сборка — FSM «конфигурация или параметры (12В, мА·ч, А) → разъём»;
   • 🎯 Сценарии продаж, 💬 Возражения, ❓ FAQ (категории + поиск), стоп-лист,
     памятка, /checklist;
   • ⏰ Напоминания (follow-up) — CRUD личных дел, утренняя сводка в 9:00,
@@ -20,14 +45,15 @@ Telegram-бот для продавцов FPV-дронов и комплекту
   • 🤖 AI-ассистент — fallback на любой текст, голосовые (распознавание),
     оценка ответов 👍/👎, обратная связь админу.
 
-Стек: Python 3.14 · aiogram 3.13 (FSM в MemoryStorage) · SQLAlchemy 2 async +
+Стек: Python 3.14 · aiogram 3.13+ (FSM — кастомный SQLAlchemyStorage в БД,
+переживает рестарт) · SQLAlchemy 2 async +
 aiosqlite (SQLite data/bot.db; переход на PostgreSQL = DB_URL в .env) ·
 python-dotenv · aiohttp. AI: Cloudflare AI Worker или YandexGPT+SpeechKit —
 выбор через AI_PROVIDER в .env. fpv-ai-proxy — отдельный Node-проект
 (Cloudflare Worker) для проксирования AI и раздачи фото моделей.
 
 Запуск:  .venv\Scripts\python.exe bot.py   (из корня; в .env нужен BOT_TOKEN)
-Тесты:   .venv\Scripts\python.exe -m pytest -q   → 154 passed
+Тесты:   .venv\Scripts\python.exe -m pytest -q   → 511 passed / 0 failed
 Проверки: .venv\Scripts\python.exe -X utf8 _verify_<имя>.py
 
 2. ДЕРЕВО ПРОЕКТА (без .venv/__pycache__/logs/node_modules)
@@ -35,6 +61,11 @@ python-dotenv · aiohttp. AI: Cloudflare AI Worker или YandexGPT+SpeechKit �
 bot.py                    точка входа: Dispatcher, порядок роутеров, main()
 config.py                 .env-переменные, логгеры, единственный экземпляр Bot
 logging_setup.py          логгеры system/dialog → bot_system.log, bot_dialogs.log
+                          (RotatingFileHandler: 5×10 МБ / 10×20 МБ)
+middleware.py             UserTrackingMiddleware: outer-middleware на message/
+                          callback_query — INSERT OR IGNORE нового user_id в
+                          users + обновление last_seen_at при каждом касании
+                          (данные для /stats); сбои БД гасятся с warning
 pytest.ini, requirements*.txt, .env.example, .clinerules
 _verify_*.py              автономные смоук-проверки (раздел 14)
 _test_photo.py            вспомогательный скрипт (проверка отправки фото)
@@ -47,27 +78,53 @@ data/
   scenarios.py            SCENARIOS + SCENARIO_ORDER — сценарии продаж
   objections.py           OBJECTIONS + OBJECTION_ORDER — база возражений
   faq.json, followups.json — legacy-сид для первичного переноса в БД
+  builder/                справочники «Конструктора» (Этапы 2–5, чистые данные):
+                          keywords.py (CLASSIFICATION_RULES — 20 правил
+                          «имя 1С → категория»), categories.py (CATEGORY_LABELS,
+                          BUILD_SLOTS — 13 слотов), drone_sizes.py (размеры,
+                          MOTOR_STATOR_BY_SIZE), electrical.py / frequencies.py /
+                          control_freq.py (нормы KV/тока, ГГц/МГц-интервалы),
+                          seed_compat.py (сид 5 правил совместимости)
   bot.db (+wal/shm)       SQLite-хранилище
 
 db/
   engine.py               async-движок (DB_URL из .env или SQLite), прагмы WAL/FK
   models.py               ORM: BotSetting, FollowUp, FollowUpReminder, CalcEntry,
-                          Price, FaqCategory, FaqQuestion
-  repositories.py         followups, calc_history, prices, faq, settings
+                          Price, FaqCategory, FaqQuestion, User (users),
+                          DailyCounter (daily_counters); «Конструктор» (Этап 1):
+                          Part, Stock, StockSnapshot(+StockSnapshotRow),
+                          PartAlias, CompatRule, BuilderDraft
+  repositories.py         followups, calc_history, prices, faq, settings,
+                          users (touch/count_all/count_active_since),
+                          counters (incr/value — дневные счётчики AI)
+  repositories_builder.py фасады «Конструктора» (16 шт., Этап 4): parts/stock,
+                          compat_rules, builder_drafts (save_draft с draft_id= —
+                          update, не дубль); реэкспортируются в db.repositories
   seed.py                 идемпотентный перенос JSON → пустые таблицы
 
-handlers/                 13 роутеров aiogram 3 (раздел 6)
-keyboards/keyboards.py    клавиатуры: main_kb, ttx_rows_kb, callback_row и др.
-services/ai_providers/    base / cloudflare / yandex / factory / prompts
-states/states.py          FeedbackState, BuildState, SelectionState
-tests/                    conftest, fakes, fakes_http + 14 тест-файлов
+handlers/                 15 роутеров aiogram 3 (раздел 6; конструктор — 6а)
+keyboards/                keyboards.py (main_kb, ttx_rows_kb, callback_row и др.),
+                          builder.py («Конструктор»: kb_start/kb_slot_menu/
+                          kb_part_list/kb_review/kb_drafts, MAX_LABEL_LEN=40,
+                          пагинация 10/стр, no-op индикатор «dummy»)
+services/                 ai_providers/ (base / cloudflare / yandex / factory /
+                          resilience / prompts) + builder/ — чистая триада
+                          «Конструктора»: classifier.py, compat.py, matcher.py
+states/states.py          FeedbackState, BuildState, SelectionState, BuilderState
+                          (6 состояний «Конструктора» — раздел 6а)
+tests/                    conftest, fakes, fakes_http + 32 тест-файла
+                          (в т.ч. builder_* — раздел 14)
 utils/
   ui.py                   edit_or_send (умная правка сообщения), log_event (JSON)
   utils.py                фильтрация каталога, форматирование прайса/ТТХ
 deploy/                   прод-комплект: fpvbot.service (systemd-юнит),
+                          fpvbot-watchdog.{service,timer} + watchdog.py
+                          (проверка живости каждые 4 ч: юнит + heartbeat бота
+                          → рестарт при зависании + уведомление админу),
                           backup_db.py (онлайн-бэкап БД перед деплоем/cron),
                           make_release.py (релиз-архив БЕЗ .env и data/bot.db*),
-                          README.md (переезд с nohup на systemd + чек-лист деплоя)
+                          README.md (переезд с nohup на systemd + деплой +
+                          раздел 5: watchdog), QUICKSTART.md (пуск с нуля)
 fpv-ai-proxy/             Node-проект: Cloudflare Worker (src/index.js, wrangler.toml);
                           src/AKB_IMAGES/*.png — фото карточек моделей (6s/8s)
 
@@ -83,24 +140,32 @@ config ← data/states/keyboards/utils/ai/services ← handlers ← bot.py
 
 4. ТОЧКА ВХОДА bot.py — ПОРЯДОК РОУТЕРОВ И ЗАПУСК
 -------------------------------------------------
-Порядок include_router КРИТИЧЕН (aiogram отдаёт апдейт первому подходящему):
-  0) early_buttons — «ранние» кнопки «🤖 AI-ассистент» и «📚 Шпаргалки»:
+Порядок include_router КРИТИЧЕН (aiogram отдаёт апдейт первому подходящему;
+контракт — tests/test_verify_all.py):
+  0) admin — админ-команды и шаги админ-FSM раньше FSM-сценариев и fallback
+     (калькулятор ловит любой текст в своих состояниях);
+  1) early_buttons — «ранние» кнопки «🤖 AI-ассистент» и «📚 Шпаргалки»:
      открываются из любого FSM-сценария (нажатие сбрасывает сценарий и открывает
      раздел; раньше кнопку «съедал» активный сценарий — «выход в меню»);
-  1) calculator — FSM-ввод не должен перехватываться fallback'ом AI;
-  2) menu — /start, callback model:<код> из сценариев обрабатывается здесь;
-  3) cheatsheets — «📚 Шпаргалки» (cheat:*) сразу после menu;
-  4) scenarios — после menu: кнопки «📦 Карточка <модель>» перехватывает menu;
-  5) followup — FSM ограничен FollowUpState, но до fallback;
-  6) faq — статические экраны + FSM поиска;
-  7) objections — статические экраны + стоп-лист;
-  8) selection / search / build / voice — прочие сценарии;
-  9) fallback — последним: любой нераспознанный текст → AI.
+  2) calculator — FSM-ввод не должен перехватываться fallback'ом AI;
+  3) menu — /start, callback model:<код> из сценариев обрабатывается здесь;
+  4) cheatsheets — «📚 Шпаргалки» (cheat:*) сразу после menu;
+  5) scenarios — после menu: кнопки «📦 Карточка <модель>» перехватывает menu;
+  6) followup — FSM ограничен FollowUpState, но до fallback;
+  7) faq — статические экраны + FSM поиска;
+  8) objections — статические экраны + стоп-лист;
+  9) selection / search / build / builder / voice — прочие сценарии
+     (builder — сразу после build и до voice: FSM-ввод part_input
+     конструктора не должен уходить в fallback AI);
+  10) fallback — последним: /health (статус AI, только админ), затем любой
+      нераспознанный текст → AI.
 
 main(): init_db() (движок+таблицы+сид, идемпотентно) → get_ai_provider()
-(fail-fast при неверном AI_PROVIDER) → фоновые задачи reminders_loop и
-upcoming_loop → бесконечный polling с авто-рестартом (backoff 5→60 сек);
-finally: отмена фоновых задач + close_db().
+(fail-fast при неверном AI_PROVIDER) → фоновые задачи reminders_loop,
+upcoming_loop, heartbeat (пульс для watchdog, deploy/watchdog.py) →
+бесконечный polling с авто-рестартом (backoff 5→60 сек);
+finally: отмена фоновых задач + close_db(). Сбои AI в рантайме фатальны
+только на старте с неверным конфигом: дальше обёртка resilience (раздел 12).
 
 5. КОНФИГУРАЦИЯ И ЛОГИРОВАНИЕ
 -----------------------------
@@ -115,6 +180,20 @@ cheatsheet_open {user_id, name, ...} — удобно разбирать ана�
 
 6. РОУТЕРЫ handlers/ (по модулям)
 ---------------------------------
+admin.py            Админ-команды (только ADMIN_ID; не-админ — тишина, как у
+                    /health). Роутер подключён ПЕРВЫМ: команды и шаги админ-FSM
+                    не должны перехватываться FSM-сценариями и fallback AI.
+                    /stats — аналитика: пользователи всего, активные за 7 дней
+                    (таблица users), расчёты маржи за сегодня (calc_entries),
+                    обращения к AI за сегодня (daily_counters: ai_ask/ai_voice);
+                    /add_faq — FSM AdminState: вопрос → ответ → категория
+                    (категория ищется без учёта регистра, новая — в конец
+                    списка; тексты html.escape'ятся: FAQ рендерится в HTML);
+                    /update_price — FSM: код модели → новая цена («35000» —
+                    розница/cash, «опт=32000» — ступень, подписи PRICE_FIELDS
+                    калькулятора); /cancel + слово «отмена» в шагах; неизвестная
+                    команда в шаге ввода не сохраняется как текст.
+
 early_buttons.py   «Ранние кнопки меню». Роутер с двумя message-хендлерами,
                    регистрирующими РЕАЛЬНЫЕ реализации из других модулей:
                    menu.button_ai_assistant («🤖 AI-ассистент») и
@@ -176,6 +255,11 @@ search.py          «🔎 Поиск»: мульти-фильтр по ката�
 
 build.py           «🔧 Своя сборка»: FSM BuildState (waiting_for_config →
                    waiting_for_connector), build_conn:* — выбор разъёма.
+                   Умный ввод: 14S12P (латиница/кириллица «14с12р») либо
+                   параметры — «12В 12000мА·ч», «8S», «12000мА·ч», «90А»:
+                   перевод в S/P (ячейка 3,7 В / 4000 мА·ч / 35 А на группу),
+                   частичный ввод доспрашивается, показывается recap
+                   «Как понял запрос»; диапазоны 1–16S и 1–20P.
 
 voice.py           Голосовые сообщения: voice → AI-прокси (распознавание) →
                    текст обрабатывается как вопрос.
@@ -184,13 +268,158 @@ fallback.py        Последний роутер: текст не из кно�
                    из ai/ai.py); неизвестные /команды — молча; прочий контент —
                    подсказка «понимаю текст и голосовые».
 
+admin.py           Админ-команды (только ADMIN_ID; не-админ — тишина):
+                   /stats — аналитика (users, daily_counters, calc_entries)
+                   + блок «🛠 Конструктор» (частей всего/с остатком,
+                   категорий, последний снапшот, черновики),
+                   /add_faq — FSM «вопрос → ответ → категория» (экранирование
+                   HTML), /update_price — смена ступени прайса («35000» или
+                   «опт=32000»), /cancel.
+                   Конструктор (Этап 8): /load_stock — FSM ждёт CSV-документ
+                   (NamedTemporaryFile + unlink в finally; снапшоты —
+                   list_snapshots(limit=2) ПОСЛЕ импорта; топ-5 изменений
+                   diff_snapshots; подсказка /classify_pending при «other»),
+                   /classify_pending — «other»-позиции, /add_alias
+                   «<категория> <название>» — upsert part_aliases +
+                   reclassify_all_parts (+commit), /aliases, /del_alias,
+                   /compat_rules — экран правил + kb_compat_rules
+                   (cr:toggle:<id> → set_compat_rule_active + перерисовка
+                   edit_or_send; cr:add → FSM AdminState: waiting_rule_type →
+                   waiting_rule_params (JSON-объект, иначе шаг повторяется) →
+                   waiting_rule_desc («-» — без описания)), /stock_stats —
+                   расход между двумя последними снапшотами, /reclassify —
+                   пересчёт всех позиций (+ список «other»). Роутер стоит
+                   в bot.py ПЕРВЫМ.
+
+builder.py         «🛠 Конструктор дронов» — FSM BuilderState, колбэки «b:*»;
+                   состав, слоты и поток данных — раздел 6а.
+
+6а. «🛠 КОНСТРУКТОР ДРОНОВ» (ЭТАПЫ 1–10)
+--------------------------------------
+Сборка FPV-борта по слотам из боевой БД остатков: /builder → 7 слотов
+BUILD_SLOTS (все обязательные: frame, motor, prop, fc_esc_stack, vtx, camera,
+rx; battery/tx — хотфикс Этапа 10а, антенны/VRX/payload — хотфикс Этапа 10б —
+вне слотов борта: остаются категориями склада и классификации),
+подбор кандидатов с учётом уже выбранного, проверка совместимости, черновики.
+
+ГЕКСА/ОКТО (Этап 11в): рецепт гексакоптера владельца хранит состав БЕЗ рамы
+(карточка печатает «➖ Рама: под заказ (нет на складе)»); рама 6/8-моторных
+сборок — статус «под заказ» БЕЗ дюймовой привязки: в свободном режиме после
+выбора размера с 6-моторными серийными сборками бот спрашивает число моторов
+(b:motors:4/6), при 6/8 моторах слот frame показывает экран «Рамы … на складе
+нет» с кнопкой «📭 Рама под заказ» (mto-слот key=None, made_to_order=True —
+не участвует в L1/L3/L4, complete=True). Whitelist L1 учитывает пару
+(размер, число моторов): allowed_union(recipes, motor_count) — квадро 15″
+не предлагает мотор 4320, гекса 15″ предлагает именно его; расход L4 в
+свободном режиме — motor = motor_count, проп = 1 комплект.
+
+Модули (зависимости в одну сторону: data/builder ← services/builder ← db ←
+keyboards/handlers ← bot.py; db/, data/builder/ — не трогать с Этапа 5):
+  data/builder/keywords.py     CLASSIFICATION_RULES — 20 упорядоченных правил
+                               «название 1С → категория» (fiber раньше vrx/rx,
+                               vtx раньше tx/camera; боевая опечатка
+                               «пропейлер» ловится);
+  data/builder/categories.py   CATEGORY_LABELS (20 подписей UI) + BUILD_SLOTS
+                               (7 слотов: категория, обязательность, заголовок);
+  data/builder/drone_sizes.py  DRONE_SIZES {7,9,10,13,15}, SIZE_TOKENS
+                               («10х5х3», «13?9?3»), MOTOR_STATOR_BY_SIZE;
+  data/builder/electrical.py   KV_RANGE_BY_SIZE, MIN_ESC_CURRENT_BY_SIZE;
+  data/builder/frequencies.py  ГГц-интервалы видео (parse_video_band,
+                               bands_intersect, tol=0.05);
+  data/builder/control_freq.py МГц-интервалы управления (170…915, 2.4G);
+  data/builder/seed_compat.py  сид 5 правил совместимости в compat_rules;
+  services/builder/classifier.py — classify_part/enrich: категория + параметры
+                               имени (только RELEVANT_PARAMS категории);
+  services/builder/matcher.py  parse_fragments («10 дюймов 3115 900KV» →
+                               size/stator/kv), score_part/filter_parts
+                               (пустые фрагменты → 1.0; score ↓, name ↑),
+                               apply_slot_filters (моторы под размер сборки,
+                               vtx/антенны под диапазон, tx/rx под частоту);
+  services/builder/compat.py   check_compatibility(CONFIG, PARTS_BY_SLOT,
+                               rules) → RESULT {ok, complete, missing,
+                               build_size, errors, warnings} — детерминирован;
+  keyboards/builder.py         kb_start / kb_slot_menu / kb_part_list /
+                               kb_review / kb_drafts; MAX_LABEL_LEN=40 («…»),
+                               PAGE_SIZE=10, «1/3» — no-op callback "dummy";
+  handlers/builder.py          тонкие хендлеры: orchestration + рендер;
+                               регистрации router.* — в конце файла;
+  db/repositories_builder.py   16 фасадов (реэкспорт в db.repositories);
+  _verify_builder.py           смоук-скрипт, 5 чек-поинтов (раздел 14).
+
+Таблицы БД «Конструктора» (8):
+  parts                номенклатура: key (нормализованное имя, part_key()),
+                       name, category, unit, params JSON (size/stator/kv/
+                       current/video_band/control_freq/power_w — только
+                       релевантные категории ключи);
+  stock                остатки по part_id (quantity, updated_at);
+  stock_snapshots      загрузки CSV (filename, total/new/removed_parts);
+  stock_snapshot_rows  построчный состав каждой загрузки;
+  part_aliases         алиасы имён + category_override — ручные исправления
+                       админа, побеждают автоклассификацию всегда;
+  compat_rules         правила совместимости (rule_type, params, is_active);
+  builder_drafts       черновики: user_id, name, config JSON
+                       ({slots: {категория: {key, qty}}}).
+
+BuilderState (6 состояний) и переходы:
+  start → (b:start:new) slot_menu → (b:slot:<cat>) part_list →
+  (b:part:<id>) slot_menu; (b:page:±1) — страницы part_list;
+  (b:input) part_input → текст → parse_fragments → part_list;
+  slot_menu → (b:review) review → (b:save) сохранение → (b:done) финиш
+  или (b:back) slot_menu; (b:start:resume) — свежий черновик → slot_menu;
+  (b:start:drafts) drafts → (b:draft:load:<id>) slot_menu /
+  (b:draft:del:<id>) drafts; (b:cancel) → start (сброс); «⬅» (b:back):
+  drafts → start, part_list/review → slot_menu.
+  state.data: slots, draft_id, current_slot, page, filters.
+
+Порядок роутеров bot.py (фактический, контракт test_verify_all):
+  admin, early_buttons, calculator, menu, cheatsheets, scenarios, followup,
+  faq, objections, selection, search, build, builder, voice, fallback.
+
+Поток данных: CSV 1С (cp1251, «Номенклатура, ;Ед;Кол-во») → import_stock_csv
+(classify_part + extract_params, алиасы-override) → parts/stock → фасады
+db.repositories_builder → matcher (apply_slot_filters → filter_parts) →
+хендлеры → клавиатуры; итог: check_compatibility (правила из compat_rules +
+встроенные: комплектность, наличие детали, достаточность остатка).
+
+Админ-контур (ЭТАП 8, handlers/admin.py, первый роутер — не-админ тишина):
+  /load_stock         FSM-шаг ждёт CSV-документ (cp1251/utf-8); байты через
+                      message.download → tempfile.NamedTemporaryFile(delete=False)
+                      → import_stock_csv, файл удаляется в finally; отчёт:
+                      «Позиций: N, новых: X, обнулено: Y, пропущено: Z» +
+                      снапшот #id (list_snapshots(limit=2) ПОСЛЕ импорта) +
+                      топ-5 изменений «имя: old → new (±d)» из diff_snapshots
+                      (без второго снапшота — «первый») + «Без категории: M →
+                      /classify_pending» при наличии «other»;
+  /classify_pending   «other»-позиции («  • ключ — имя (qty)», ≤ 20 строк);
+  /add_alias          «<категория> <название>» (первое слово — категория из
+                      PART_CATEGORIES): upsert part_aliases (created_by) +
+                      reclassify_all_parts (+commit); отчёт «Пересчёт:
+                      changed=N»; для имён, которых ещё нет в parts, —
+                      подсказка «применится при следующем /load_stock»;
+  /aliases /del_alias список «#id имя → категория|part_key» и удаление по id;
+  /compat_rules       экран правил (✅/⛔ #id тип — описание) + клавиатура
+                      kb_compat_rules; cr:toggle:<id> — set_compat_rule_active
+                      (NOT текущего) и перерисовка через edit_or_send;
+                      cr:add — FSM AdminState.waiting_rule_type →
+                      waiting_rule_params (json.loads + isinstance dict, иначе
+                      шаг повторяется) → waiting_rule_desc («-» — без описания);
+  /stock_stats        расход между двумя последними снапшотами: убывания/
+                      пополнения (позиций и шт), новые/исчезли, топ-5;
+  /reclassify         reclassify_all_parts (+commit): «total=N, changed=M»
+                      (идемпотентен — повторный прогон даёт 0) + список
+                      «other» на ручную разметку;
+  /stats              блок «🛠 Конструктор»: частей всего/с остатком,
+                      категорий, последний снапшот, черновики.
+
 7. FSM-СОСТОЯНИЯ
 ----------------
 states/states.py (общие): FeedbackState (обратная связь), BuildState
-(конфигурация, разъём), SelectionState (step_a…step_frame).
+(конфигурация, разъём), SelectionState (step_a…step_frame), BuilderState
+(«Конструктор», 6 состояний — схема переходов в разделе 6а).
 Локальные в роутерах: MarginState (calculator.py: выбор модели → закупочная
 цена → доставка → …), FaqState (faq.py: ввод поискового запроса),
-FollowUpState (followup.py: текст напоминания).
+FollowUpState (followup.py: текст напоминания), AdminState (admin.py: шаги
+/add_faq и /update_price).
 Паттерн «ранних кнопок»: меню-кнопки зарегистрированы РАНЬШЕ сценариев и
 сами сбрасывают state — сценарий не может «съесть» нажатие.
 
@@ -239,11 +468,16 @@ WAL, foreign_keys, busy_timeout; init_engine/ensure_engine/get_sessionmaker/
 close_engine; init_db() (в db/__init__) — движок + таблицы + seed_from_json.
 models.py (ORM): BotSetting (KV-настройки, напр. last_daily), FollowUp
 (напоминания), FollowUpReminder (журнал «за N минут»), CalcEntry (история
-расчётов), Price (прайс калькулятора), FaqCategory, FaqQuestion.
+расчётов), Price (прайс калькулятора), FaqCategory, FaqQuestion, UserState
+(FSM-состояния aiogram).
 repositories.py: followups, calc_history, prices, faq, settings — фасады
-в формате «как в старом JSON», чтобы хендлеры не знали про ORM.
+в формате «как в старом JSON», чтобы хендлеры не знали про ORM; операции
+записи обёрнуты в @retry_on_db_lock (db/retry.py) — повтор при блокировке
+SQLite. fsm_storage.py: персистентное FSM-хранилище aiogram (BaseStorage)
+поверх user_states — замена MemoryStorage, диалог переживает рестарт.
 Итоговые таблицы: settings, follow_ups, followup_reminders, calc_history,
-prices, faq_categories, faq_questions.
+prices, faq_categories, faq_questions, users + daily_counters (аналитика
+/stats: учёт менеджеров и обращения к AI), user_states.
 
 11. КЛАВИАТУРЫ И УТИЛИТЫ
 ------------------------
@@ -265,16 +499,34 @@ utils/utils.py: фильтрация MODELS по фильтрам поиска/�
 -----------
 ai/ai.py (фасад):
   ask_ai(question)             — ответ через провайдера из .env (AI_PROVIDER);
+                                 вызов идёт через ResilientAIProvider, ошибка
+                                 после ретраев → в системный лог, пользователю
+                                 — случайная фраза-заглушка из пула
+                                 AI_FALLBACK_PHRASES (prompts.py);
   handle_ai_request(msg, text) — «⏳ Запрашиваю AI-ассистента…» → ответ →
   answer_ai_with_feedback(...) — ответ + inline 👍/👎 (fb_good/fb_bad
                                  обрабатываются в menu.py, пишутся в лог).
 
 services/ai_providers/:
-  base.py      интерфейс провайдера (name, is_configured, ответ/транскрибация);
+  base.py      интерфейс провайдера (name, is_configured, retries_internally,
+               ответ/транскрибация);
   cloudflare.py Cloudflare AI Worker (AI_PROXY_URL + AI_PROXY_TOKEN);
   yandex.py    YandexGPT + SpeechKit (YANDEX_API_KEY/IAM_TOKEN/FOLDER_ID/MODEL);
+               свой retry 429/5xx/таймаутов/сети в _request_json;
   factory.py   get_ai_provider() по AI_PROVIDER; fail-fast в bot.main();
-  prompts.py   системный промпт «продавец FPV».
+  resilience.py отказоустойчивость: ResilientAIProvider (retry «быстрых»
+               переходящих ошибок с backoff; таймауты не ретраятся), circuit
+               breaker (3 сбоя подряд → 60 с мгновенных отказов → half-open
+               проба), деградация «не сконфигурирован» без последствий,
+               get_breaker() — общий брейкер рантайма; voice.py/transcribe
+               и fallback-вопросы ходят только через эту обёртку;
+               мгновенный отказ → случайная фраза-заглушка
+               (ai_fallback_phrase, friendly=True у ошибки);
+               health_check() — живой отчёт для команды /health (админ):
+               конфигурация + состояние брейкера + проба ask('ping');
+  prompts.py   системный промпт «продавец FPV» + AI_FALLBACK_PHRASES —
+                пул дружелюбных фраз-заглушек деградации AI, выбор случайный
+                (ai_fallback_phrase; аудит п. 2.3).
 
 fpv-ai-proxy/ (отдельный Node-проект, деплой через wrangler):
   src/index.js        Worker: прокси к AI + раздача фото карточек;
@@ -294,11 +546,16 @@ followup.py, запускается из bot.main() после init_db():
 
 14. ТЕСТЫ И VERIFY-СКРИПТЫ
 --------------------------
-tests/ (pytest, 154 passed):
+tests/ (pytest, 563 passed / 0 failed; 37 файлов):
   conftest.py    окружение: файловая SQLite в tmp_path на каждый тест,
                  изоляция от реального .env;
-  fakes.py       FakeMsg / FakeCb / FakeState / kb_data — без реального Telegram;
+  fakes.py       FakeMsg (+document/download) / FakeDocument / FakeCb /
+                 kb_data — без реального Telegram;
   fakes_http.py  подмена HTTP для AI-провайдеров;
+  test_ai_resilience.py            retry, circuit breaker, деградация,
+                                   health_check (без сети, фейки-провайдеры);
+  test_heartbeat.py                heartbeat watchdog: запись метки, отключение
+                                   без HEARTBEAT_FILE, устойчивость к bad path;
   test_calculator.py               FSM-расчёт, скидки, история;
   test_db_engine.py                формы sqlite-URL, авто-создание каталога БД;
   test_handlers_cheatsheets.py     cheat:*-меню, каталог, «назад» (в т.ч. новые
@@ -307,13 +564,55 @@ tests/ (pytest, 154 passed):
   test_handlers_followup.py        CRUD напоминаний, FSM;
   test_handlers_objections.py      возражения + раскладка списка;
   test_handlers_scenarios.py       сценарии + раскладка списка;
-  test_ai_providers.py             фабрика и провайдеры (fakes_http);
+  test_ai_providers.py             фабрика и провайдеры (fakes_http) + фасад
+                                   (ошибка → случайная фраза из пула, п. 2.3);
+  test_user_tracking.py            users/daily_counters: touch, окна активности,
+                                    UserTrackingMiddleware (пропуск ботов, сбой
+                                    БД), счётчик обращений в ask_ai;
+  test_admin_handlers.py           /stats, /add_faq (3 шага, экранирование,
+                                    существующая/новая категория), /update_price
+                                    (розница по умолчанию, ступень «опт=…»,
+                                    неизвестные модель/ступень), /cancel,
+                                    тишина для не-админа;
+  test_admin_builder.py            админ-контур конструктора (Этап 8): тишина
+                                    для не-админа, /load_stock (v1-отчёт и
+                                    чистота tempfile, v2 с diff и подсказкой,
+                                    не-CSV, текст/«отмена» в шаге),
+                                    /classify_pending, /add_alias (reclassify,
+                                    upsert, валидация, имя без детали),
+                                    /aliases /del_alias, /compat_rules (экран
+                                    сида, toggle с перерисовкой, неизвестный
+                                    id, FSM-добавление с валидацией JSON и
+                                    отменой), /stock_stats (1 и 2 снапшота),
+                                    /reclassify (идемпотентность + «other»),
+                                    блок конструктора в /stats;
+  test_handlers_build.py           «Своя сборка»: парсер ввода (14S12P и
+                                    кириллица, 12В/12000мА·ч/90А, «ач»/«ah» —
+                                    ёмкость, не ток), досправшивание частичного
+                                    ввода, диапазоны 1–16S/1–20P, итоговая
+                                    карточка (XT60, балансир, токи);
+  test_builder_repos.py            фасады «Конструктора»: parts/stock,
+                                    алиасы-override, правила, черновики
+                                    (save/get/list/delete, draft_id= — update);
+  test_classifier.py               классификация боевых имён 1С + параметры;
+  test_stock_import.py             CSV 1С: парсинг, key-нормализация, снапшоты;
+  test_data_builder.py             справочники sizes/frequencies/keywords;
+  test_compat_seed.py              сид 5 правил совместимости;
+  test_builder_matcher.py          parse_fragments/score/apply_slot_filters;
+  test_builder_compat.py           правила + встроенные проверки + RESULT;
+  test_builder_keyboards.py        раскладки, trunc_label, пагинация;
+  test_builder_handlers.py         smoke хендлеров + покрытие колбэков;
+  test_builder_e2e.py              E2E-поток на фейках с реальной БД: happy
+                                    path 10″, resume, некомплект, легаси-черновик
+                                    (антенна/VRX отфильтрованы при загрузке),
+                                    update черновика, фильтр/пагинация/финиш;
   test_data_models/objections/scenarios.py — целостность справочников;
   test_keyboards.py                клавиатуры;
   test_utils_ui.py                 edit_or_send / log_event;
   test_verify_all.py               интеграционные: сборка bot.py, порядок
-                                   роутеров (EXPECTED_ROUTER_NAMES, early_buttons
-                                   первый), запуск _verify_* скриптов как import.
+                                   роутеров (EXPECTED_ROUTER_NAMES, admin
+                                   первый, early_buttons рядом), запуск
+                                   _verify_* скриптов как import.
 
 Verify-скрипты (автономные смоук-проверки; запуск: python -X utf8 _verify_X.py):
   _verify_calc.py          калькулятор end-to-end;
@@ -321,7 +620,9 @@ Verify-скрипты (автономные смоук-проверки; зап�
   _verify_scenarios.py     цепочки scn:*;
   _verify_flow.py          сценарий Подбора А→Б→В + раскладки;
   _verify_faq.py           12 блоков FAQ (поиск, exits, menu-mirror);
-  _verify_build_menu.py    сборка бота: роутеры, меню, early_buttons (блок 8);
+  _verify_build_menu.py    сборка бота: роутеры (admin первый), меню, early_buttons (блок 8);
+  _verify_builder.py       «Конструктор»: matcher/classifier/compat/keyboards/
+                           фасады — 5 чек-поинтов (подключён к test_verify_all);
   _verify_ai_providers.py  выбор провайдера;
   _verify_sel.py           подбор (ранние проверки).
 
@@ -334,13 +635,32 @@ Verify-скрипты (автономные смоук-проверки; зап�
     закэшированных reply-клавиатур у пользователей — удалять нельзя;
   • fpv-ai-proxy/node_modules лежит рядом с исходниками — шум в поиске
     по дереву (исключать через .gitignore/фильтры при обходах);
-  • деплой-комплект создан (deploy/: systemd-юнит, backup_db.py, make_release.py,
-    README.md) — ОСТАЛОСЬ выполнить активацию на сервере по deploy/README.md:
+  • деплой-комплект создан (deploy/: systemd-юниты fpvbot + fpvbot-watchdog,
+    watchdog.py, backup_db.py, make_release.py, README.md) — ОСТАЛОСЬ выполнить
+    активацию на сервере по deploy/README.md (раздел 1 — юнит, раздел 5 —
+    watchdog: heartbeat в .env + enable таймера):
     pkill -INT nohup-процесса → юнит в /etc/systemd/system → enable --now;
     по желанию — переезд БД в /root/fpvbot_data (DB_URL в .env).
 
-Снимок актуален на 17.09.2026: фикс навигации «📚 Шпаргалки» завершён
-(early_buttons первым роутером + cheat:menu + кнопки «⬅️ В шпаргалки» на всех
-экранах разделов), НДС-условие в калькуляторе снято (порог только 2 500 ₽),
-прод-гигиена: deploy-комплект + .gitignore/архив без БД + бэкап перед деплоем,
-pytest 154 passed, все _verify_* зелёные.
+Снимок актуален на 09.10.2026: ЭТАП 8 завершён — админ-контур «Конструктора»:
+/load_stock (FSM-документ, tempfile с unlink, diff-отчёт), /classify_pending +
+/add_alias (разметка «other» + reclassify), /aliases /del_alias, /compat_rules
+(toggle + FSM-добавление через kb_compat_rules), /stock_stats, /reclassify,
+блок «🛠 Конструктор» в /stats + tests/test_admin_builder.py; ЭТАП 7:
+конструктор доведён до E2E-тестов (test_builder_e2e.py) и смоука
+(_verify_builder.py), bot.py дополнен heartbeat'ом watchdog'а
+(HEARTBEAT_FILE/HEARTBEAT_INTERVAL) и admin-роутером ПЕРВЫМ (контракт
+EXPECTED_ROUTER_NAMES + builder на позиции 12);
+pytest 511 passed / 0 failed, все _verify_* зелёные (включая _verify_builder.py);
+ранее: бизнес-фичи пп. 3.1–3.2 завершены
+— таблица
+users + middleware учёта (INSERT OR IGNORE новому user_id + last_seen_at при
+любом сообщении/нажатии), дневные счётчики обращений к AI (daily_counters),
+admin-CRUD в боте; «Своя сборка» понимает параметры («12В 12000мА·ч», «8S»,
+«90А») без готовой геометрии 14S12P;
+админ-команды /stats, /add_faq, /update_price (CRUD FAQ/прайса прямо в боте,
+без клиента БД и правки JSON); ранее: фикс навигации «📚 Шпаргалки»
+(early_buttons + cheat:menu), надёжность AI: retry + circuit breaker +
+graceful degradation + пул фраз-заглушек + /health (resilience.py),
+серверный watchdog: systemd-таймер проверяет юнит + heartbeat бота
+(HEARTBEAT_FILE) → рестарт при зависании + уведомление админу в Telegram.

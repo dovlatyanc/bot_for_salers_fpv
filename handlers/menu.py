@@ -30,6 +30,7 @@ from config import ADMIN_ID, bot, dialog_logger, system_logger
 from keyboards import MENU_EXIT_BUTTONS, main_kb
 from states import FeedbackState
 from utils import get_row, models_by_row, send_model_card
+from utils.ui import safe_answer
 
 router = Router(name="menu")
 
@@ -50,6 +51,7 @@ async def cmd_start(message: types.Message):
 📝 Обратная связь — написать администратору
 ⏰ Напоминания — дела по клиентам: сроки и звонки
 📊 История расчётов — последние 5 расчётов
+🛠 Конструктор дронов — сборка борта из того, что есть на складе
 
 Также я понимаю <b>голосовые сообщения</b>!
 """.strip()
@@ -171,6 +173,18 @@ async def button_memo(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(MEMO_TEXT, parse_mode="HTML")
 
+
+@router.message(F.text == "🛠 Конструктор дронов")
+async def button_builder(message: types.Message, state: FSMContext):
+    """Reply-кнопка «🛠 Конструктор дронов» (Этап 9) — тот же вход, что /builder.
+
+    Импорт ленивый: handlers/builder.py не зависит от menu.py, но порядок
+    роутеров в bot.py мог бы создать цикл при верхнеуровневом импорте.
+    """
+    from handlers.builder import cmd_builder
+
+    await cmd_builder(message, state)
+
 # ============================================================
 # AI-АССИСТЕНТ (кнопка меню)
 # ============================================================
@@ -270,7 +284,7 @@ async def callback_row(callback: types.CallbackQuery):
     buttons.append([InlineKeyboardButton(text="⬅️ К рядам", callback_data="cheat:ttx")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     await callback.message.edit_text(f"Модели ряда {row}:", reply_markup=kb)
-    await callback.answer()
+    await safe_answer(callback, )
 
 @router.callback_query(F.data.startswith("model:"))
 async def callback_model(callback: types.CallbackQuery):
@@ -285,7 +299,7 @@ async def callback_model(callback: types.CallbackQuery):
     # MODIFIED: карточка через send_model_card (фото + подпись, если фото есть)
     await send_model_card(callback, model_code, back_kb, bot)
 
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 # ============================================================
@@ -317,10 +331,10 @@ async def process_ai_feedback(callback: types.CallbackQuery):
     except Exception as e:
         system_logger.warning(f"Failed to edit reply markup: {e}")
 
-    await callback.answer()
+    await safe_answer(callback, )
 
 @router.callback_query(F.data == "dummy")
 async def dummy_callback(callback: types.CallbackQuery):
-    await callback.answer()
+    await safe_answer(callback, )
 
 

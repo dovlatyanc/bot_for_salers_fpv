@@ -19,6 +19,7 @@ from datetime import datetime
 from typing import Any, Mapping
 
 from aiogram import types
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.types import InlineKeyboardMarkup
 
 from config import dialog_logger, system_logger
@@ -112,6 +113,37 @@ async def show_screen(
             system_logger.warning(f"{warn_prefix}: {e}")
     else:
         await message.answer(text, reply_markup=reply_markup, parse_mode="HTML")
+
+
+async def safe_answer(callback: types.CallbackQuery, *args, **kwargs):
+    """ack колбэка не должен ронять хендлер: просроченный/сетевой ack —
+    не ошибка бизнес-логики.
+
+    TelegramBadRequest с «query is too old» / «response timeout expired» /
+    «query ID is invalid» проглатывается с warning (callback-запрос живёт
+    ~30 с: при сетевой просадке апдейт обрабатывается поздно, и ack после
+    истечения срока падал необработанным исключением). Настоящие ошибки
+    (например BUTTON_DATA_INVALID) ре-райзятся. TelegramNetworkError —
+    warning без падения.
+    """
+    try:
+        return await callback.answer(*args, **kwargs)
+    except TelegramBadRequest as e:
+        text = str(e)
+        if any(
+            marker in text
+            for marker in (
+                "query is too old",
+                "response timeout expired",
+                "query ID is invalid",
+            )
+        ):
+            system_logger.warning(f"callback ack skipped: {e}")
+            return None
+        raise
+    except TelegramNetworkError as e:
+        system_logger.warning(f"callback ack network skip: {e}")
+        return None
 
 
 async def safe_answer_long(message: types.Message, text: str) -> None:

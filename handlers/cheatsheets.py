@@ -55,6 +55,7 @@ from handlers.objections import _show_list as show_objections_list
 from handlers.scenarios import _show_list as show_scenarios_list
 from handlers.selection import SEL_STEP_A_TEXT, _sel_step_a_kb
 from utils.ui import edit_or_send, log_event
+from utils.ui import safe_answer
 
 router = Router(name="cheatsheets")
 
@@ -121,7 +122,7 @@ async def callback_cheat_menu(callback: types.CallbackQuery):
         callback.message, CHEATSHEET_TEXT,
         reply_markup=_cheat_kb(), warn_prefix="Cheatsheet menu edit failed",
     )
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data == "cheat:selection")
@@ -134,7 +135,7 @@ async def callback_cheat_selection(callback: types.CallbackQuery, state: FSMCont
         await callback.message.edit_text(SEL_STEP_A_TEXT, reply_markup=_sel_step_a_kb())
     except Exception as e:
         system_logger.warning(f"Cheatsheet selection edit failed: {e}")
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data == "cheat:ttx")
@@ -148,7 +149,7 @@ async def callback_cheat_ttx(callback: types.CallbackQuery):
         )
     except Exception as e:
         system_logger.warning(f"Cheatsheet ttx edit failed: {e}")
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data == "cheat:scenarios")
@@ -156,7 +157,7 @@ async def callback_cheat_scenarios(callback: types.CallbackQuery):
     """🎯 Сценарии — тот же список, что у кнопки «🎯 Сценарии» / scn:list."""
     log_event(callback.from_user.id, "cheatsheet_open", {"name": "scenarios"})
     await show_scenarios_list(callback.message, edit=True)
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data == "cheat:faq")
@@ -166,7 +167,7 @@ async def callback_cheat_faq(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()  # как button_faq: активный поиск FAQ закрывается
     categories = await get_faq_categories()
     await _faq_edit(callback, _faq_render_main(categories), _faq_main_kb(categories))
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data == "cheat:objections")
@@ -174,7 +175,7 @@ async def callback_cheat_objections(callback: types.CallbackQuery):
     """💬 Возражения — тот же список, что у кнопки «💬 Возражения» / obj:list."""
     log_event(callback.from_user.id, "cheatsheet_open", {"name": "objections"})
     await show_objections_list(callback.message, edit=True)
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data == "cheat:stoplist")
@@ -187,7 +188,7 @@ async def callback_cheat_stoplist(callback: types.CallbackQuery):
         )
     except Exception as e:
         system_logger.warning(f"Cheatsheet stoplist edit failed: {e}")
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data == "cheat:memo")
@@ -200,7 +201,7 @@ async def callback_cheat_memo(callback: types.CallbackQuery):
         )
     except Exception as e:
         system_logger.warning(f"Cheatsheet memo edit failed: {e}")
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data == "cheat:back")
@@ -208,10 +209,10 @@ async def callback_cheat_back(callback: types.CallbackQuery):
     """⬅️ В меню — главное меню: текст /start + reply-клавиатура main_kb
     (reply-клавиатуру нельзя показать через edit_text — шлём сообщением)."""
     await cmd_start(callback.message)
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data.startswith("cheat:"))
 async def callback_cheat_unknown(callback: types.CallbackQuery):
     """Неизвестный cheat:* — защита от протухших кнопок (регистрируется последним)."""
-    await callback.answer("Раздел не найден", show_alert=True)
+    await safe_answer(callback, "Раздел не найден", show_alert=True)

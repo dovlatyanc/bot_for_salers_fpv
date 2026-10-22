@@ -6,11 +6,13 @@ import pytest
 
 import ai.ai as ai_facade
 import services.ai_providers.cloudflare as cf
+import services.ai_providers.resilience as rs
 import services.ai_providers.yandex as yx
 from services.ai_providers import (
     AIProvider, AIProviderError, CloudflareAIProvider, YandexGPTProvider,
     get_ai_provider,
 )
+from services.ai_providers.prompts import AI_FALLBACK_PHRASES
 from services.ai_providers.factory import PROVIDER_REGISTRY
 from tests.fakes_http import FakeResp, make_session_class
 
@@ -219,6 +221,10 @@ class _FakeOk(AIProvider):
     def from_config(cls):
         return cls()
 
+    @property
+    def is_configured(self):
+        return True
+
     async def ask(self, question):
         return f"ответ на: {question}"
 
@@ -236,6 +242,70 @@ async def test_facade_ask_ai_delegates(monkeypatch):
     assert await ai_facade.ask_ai("тест") == "ответ на: тест"
 
 
-async def test_facade_error_becomes_text(monkeypatch):
+async def test_facade_error_becomes_hint(monkeypatch):
+    # Ошибка после исчерпания ретраев — пользователю фраза-заглушка, не техдетали
     monkeypatch.setattr(ai_facade, "get_ai_provider", lambda: _FakeFail())
-    assert await ai_facade.ask_ai("тест") == "Ошибка X"
+    monkeypatch.setattr(rs, "RETRY_BACKOFF", 0)  # без пауз между повторами
+    try:
+        assert await ai_facade.ask_ai("тест") in AI_FALLBACK_PHRASES
+    finally:
+        rs.reset_breaker()  # не засорять общий брейкер другим тестам
+
+
+class _FakeText(_FakeOk):
+    """Провайдер, возвращающий заданный «успешный» ответ (тесты фасада)."""
+
+    def __init__(self, text):
+        self._text = text
+
+    async def ask(self, question):
+        return self._text
+
+
+async def test_facade_degenerated_answer_becomes_fallback(monkeypatch):
+    # Деградация модели (маркер секции повторяется, секции пустые) — менеджеру
+    # фраза-заглушка, мусор в чат не попадает (кейс «плохого ключа»).
+    garbage = (
+        "<b>💡 Вывод:</b> Привет, менеджер! Начнем работу.\n"
+        "<b>🗣 Что сказать клиенту:</b> Мы готовы помочь.\n"
+        "<b>❓ Какие вопросы уточнить:</b> Какая задача?\n"
+    ) + "<b>💡 Вывод:</b> \n" * 5
+    monkeypatch.setattr(ai_facade, "get_ai_provider", lambda: _FakeText(garbage))
+    assert await ai_facade.ask_ai("тест") in AI_FALLBACK_PHRASES
+
+
+async def test_facade_leaked_error_text_becomes_fallback(monkeypatch):
+    # Протёкший технический текст (невалидный ключ бэкенда) — тоже заглушка.
+    monkeypatch.setattr(
+        ai_facade, "get_ai_provider", lambda: _FakeText("Unauthorized: invalid API key")
+    )
+    assert await ai_facade.ask_ai("тест") in AI_FALLBACK_PHRASES
+
+
+async def test_facade_marker_only_answer_becomes_fallback(monkeypatch):
+    # Ответ из одного пустого маркера без содержимого — заглушка.
+    monkeypatch.setattr(
+        ai_facade, "get_ai_provider", lambda: _FakeText("<b>💡 Вывод:</b>")
+    )
+    assert await ai_facade.ask_ai("тест") in AI_FALLBACK_PHRASES
+
+
+async def test_facade_normal_answer_passthrough(monkeypatch):
+    # Штатный ответ (один маркер + содержимое секций) проходит без замен.
+    ok = (
+        "<b>💡 Вывод:</b> Для дальности берём 6S4P.\n"
+        "<b>🗣 Что сказать клиенту:</b> Наша батарея — про километры, не про рывок."
+    )
+    monkeypatch.setattr(ai_facade, "get_ai_provider", lambda: _FakeText(ok))
+    assert await ai_facade.ask_ai("тест") == ok
+
+
+async def test_cloudflare_error_payload_in_200_body(monkeypatch):
+    # HTTP 200, но прокси отдал {"ok": false, "error": ...} (старая/другая
+    # версия прокси) — провайдер бросает AIProviderError: далее сработают
+    # retry/breaker и менеджер получит фразу-заглушку.
+    sess, _ = make_session_class(FakeResp(payload={"ok": False, "error": "Unauthorized"}))
+    monkeypatch.setattr(cf.aiohttp, "ClientSession", sess)
+    p = CloudflareAIProvider(base_url="https://proxy.example", token="tok")
+    with pytest.raises(AIProviderError):
+        await p.ask("вопрос")

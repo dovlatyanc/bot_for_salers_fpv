@@ -17,6 +17,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from data import MODELS, SCENARIOS, SCENARIO_ORDER
+from utils.ui import safe_answer
 from utils.ui import (
     EDIT_SAFE_LIMIT,
     SEPARATOR,
@@ -174,7 +175,7 @@ async def callback_scenario_list(callback: types.CallbackQuery):
     """scn:list — возврат к списку сценариев."""
     _log_cb(callback, "scenario_list", "list")
     await _show_list(callback.message, edit=True)
-    await callback.answer()
+    await safe_answer(callback, )
 
 
 @router.callback_query(F.data.startswith("scn:"))
@@ -188,10 +189,10 @@ async def callback_scenario(callback: types.CallbackQuery):
         return
     if sid == "full":
         await _scenario_full(callback)
-        await callback.answer()
+        await safe_answer(callback, )
         return
     if sid not in SCENARIOS:
-        await callback.answer("Сценарий не найден", show_alert=True)
+        await safe_answer(callback, "Сценарий не найден", show_alert=True)
         return
 
     _log_cb(callback, "scenario_view", sid)
@@ -200,4 +201,4 @@ async def callback_scenario(callback: types.CallbackQuery):
         reply_markup=_scenario_kb(sid),
         warn_prefix="Scenario view edit failed",
     )
-    await callback.answer()
+    await safe_answer(callback, )
