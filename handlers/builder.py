@@ -153,11 +153,6 @@ async def _reply(target, text: str, kb, edit: bool = True) -> None:
 
 
 async def _load_chosen_parts(slots: dict | None) -> dict:
-    """{category: PART_DICT} выбранных слотов (matcher + рендер + compat).
-
-    Один проход list_parts() вместо get_part на каждый слот — справочник
-    маленький (двойной цикл дешевле N+1-запросов).
-    """
     slots = slots or {}
     key_to_cat = {sl["key"]: cat for cat, sl in slots.items() if sl.get("key")}
     if not key_to_cat:
@@ -166,6 +161,9 @@ async def _load_chosen_parts(slots: dict | None) -> dict:
     for part in await list_parts():
         category = key_to_cat.get(part["key"])
         if category is not None:
+            # Исправляем кривую кодировку из 1С: "13?9?3" -> "13×9×3"
+            if "name" in part and part["name"]:
+                part["name"] = str(part["name"]).replace("?", "×")
             chosen[category] = part
     return chosen
 
@@ -276,16 +274,11 @@ FRAME_MTO_TEXT = (
 
 
 def _recipe_card_text(recipe: dict, parts_by_key: dict) -> str:
-    """Карточка рецепта: состав по слотам человекочитаемо (label + имя + кол-во).
-
-    Под camera/vtx/rx — пометка «производственный пример — заменяемо»;
-    рамы в рецепте нет — в конце строка «Рама: любая {size}″ — выбирается
-    на шаге оформления» (модель "size": рама подбирается по размеру борта).
-    Гекса-рецепт — исключение: «Гексакоптер» это отдельная рама (шесть
-    лучей), а не любая рама размера борта — показываем её явным именем.
-    """
     size = int(recipe["size"])
-    lines = [f"📦 {recipe['title']} · {size}″"]
+    if _is_hexa_recipe(recipe):
+        lines = [f"🚁 {recipe['title']} · гексакоптер (6 моторов)"]
+    else:
+        lines = [f"📦 {recipe['title']} · {size}″"]
     slot_by_cat = {s.get("category"): s for s in recipe.get("slots") or []}
     for category, _required, _title in BUILD_SLOTS:
         slot = slot_by_cat.get(category)
@@ -306,6 +299,7 @@ def _recipe_card_text(recipe: dict, parts_by_key: dict) -> str:
         part = parts_by_key.get(key) if key else None
         # неразрешённый слот (имени нет на складе) — показываем имя из рецепта
         name = str(part.get("name")) if part else str(slot.get("name") or key or "—")
+        name = name.replace("?9?", "×9×").replace("?7?", "×7×").replace("?5?", "×5×")
         line = f"{label(category)}: {trunc_label(name)} · {fmt_qty(qty, (part or {}).get('unit') or 'шт')}"
         if category in EXAMPLE_SLOT_CATEGORIES:
             line += " (производственный пример — заменяемо)"
@@ -366,6 +360,40 @@ async def _show_part_list(target, state: FSMContext, edit: bool = True) -> None:
     fragments = data.get("filters") or {}
     if fragments:
         candidates = filter_parts(candidates, fragments)
+        
+    # --- ЖЕСТКИЙ ФИЛЬТР ДЛЯ РЕГУЛЯТОРОВ (13/15/Гекса) ---
+    if slot in ("fc_esc_stack", "esc"):
+        is_big_build = False
+        if size in (13, 15) or (motor_count and int(motor_count) > 4):
+            is_big_build = True
+            
+        if is_big_build:
+            filtered_candidates = []
+            for p in candidates:
+                name = str(p.get("name") or "").lower()
+                current = float((p.get("params") or {}).get("current") or 0)
+                is_axis = "axisflying" in name or "axis" in name
+                if is_axis and current in (80.0, 100.0):
+                    filtered_candidates.append(p)
+            candidates = filtered_candidates
+
+    if slot == "motor":
+        is_hexa = (motor_count and int(motor_count) > 4) or (data.get("hexa"))
+        if is_hexa:
+            # Для гексы оставляем ТОЛЬКО моторы 4320
+            candidates = [
+                p for p in candidates
+                if "4320" in str(p.get("name") or "") or (p.get("params") or {}).get("stator") == "4320"
+            ]
+
+    if slot == "frame" and size == 13:
+        # Убираем из выбора рамы "13 дюймов (Другого формата)"
+        candidates = [
+            p for p in candidates
+            if "другого формата" not in str(p.get("name") or "").lower()
+        ]
+    # ----------------------------------------------------
+
     note: str | None = None
     if mode == "free" and size:
         model = model_of(slot)
@@ -528,6 +556,7 @@ async def cb_size(callback: types.CallbackQuery, state: FSMContext) -> None:
             {
                 recipe_motor_qty(r)
                 for r in await list_recipes(size=size, active_only=True)
+                if not _is_hexa_recipe(r)   # гекса — отдельный тип рамы, не влияет на выбор моторов квадро
             }
         )
         if len(counts) > 1:
@@ -676,6 +705,22 @@ async def cb_slot(callback: types.CallbackQuery, state: FSMContext) -> None:
 
     await safe_answer(callback)
     category = (callback.data or "").split(":", 2)[2]
+
+    # --- ПРОВЕРКА: Запрет VTX при камере DJI ---
+    if category == "vtx":
+        data = await state.get_data()
+        slots = data.get("slots") or {}
+        chosen_parts = await _load_chosen_parts(slots) 
+        cam = chosen_parts.get("camera")
+        if cam and "dji" in str(cam.get("name") or "").lower():
+            await safe_answer(
+                callback, 
+                "У вас выбрана камера DJI. Она уже имеет встроенный VTX, отдельный передатчик не нужен.", 
+                show_alert=True
+            )
+            return
+    # -------------------------------------------
+
     if category not in {cat for cat, _required, _title in BUILD_SLOTS}:
         await safe_answer(callback, "Неизвестный раздел", show_alert=True)
         return
@@ -760,12 +805,29 @@ async def cb_save(callback: types.CallbackQuery, state: FSMContext) -> None:
 
 
 async def cb_done(callback: types.CallbackQuery, state: FSMContext) -> None:
-    """b:done → FSM завершена: state.clear() → прощание."""
-
+    """b:done → сохраняем черновик и завершаем FSM (state.clear())."""
     await safe_answer(callback)
+    
+    # 1. Сначала СОХРАНЯЕМ черновик (как в cb_save)
+    data = await state.get_data()
+    slots = _slots_in_build(data.get("slots"))
+    name = f"Черновик {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+    draft_id = data.get("draft_id")
+    
+    # Сохраняем в БД
+    draft = await save_draft(
+        int(callback.from_user.id),
+        {"slots": slots},
+        name=name,
+        draft_id=int(draft_id) if draft_id else None,
+    )
+    
+    # 2. Очищаем состояние
     await state.clear()
+    
+    # 3. Пишем честное сообщение
     await callback.message.answer(
-        "Готово! Черновик сохранён — вернусь к нему через «📂 Продолжить черновик»."
+        "✅ Готово! Черновик сохранён — вернусь к нему через «📂 Продолжить черновик»."
     )
 
 
@@ -1057,4 +1119,3 @@ router.callback_query.register(cb_draft_del, F.data.startswith("b:draft:del:"))
 
 router.message.register(process_part_input, BuilderState.part_input, F.text)
 router.message.register(process_part_input_not_text, BuilderState.part_input)
-

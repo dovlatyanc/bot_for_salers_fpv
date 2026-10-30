@@ -226,7 +226,7 @@ def kb_part_list(
     rows = []
     for part_dict in page_parts[:PAGE_SIZE]:
         button_text = (
-            f"{trunc_label(part_dict.get('name'))} · "
+            f"{part_dict.get('name')} · "
             f"{fmt_qty(part_dict.get('quantity'), part_dict.get('unit') or 'шт')}"
         )
         rows.append([InlineKeyboardButton(text=button_text, callback_data=f"b:part:{part_dict['id']}")])

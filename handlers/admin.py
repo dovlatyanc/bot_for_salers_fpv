@@ -73,7 +73,7 @@ from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy import func, select
-
+from aiogram import Bot
 from config import ADMIN_ID
 from db import (
     calc_history as history_db,
@@ -585,7 +585,7 @@ async def cmd_load_stock(message: types.Message, state: FSMContext) -> None:
 
 
 @router.message(AdminState.waiting_stock_file, F.document)
-async def stock_file_received(message: types.Message, state: FSMContext) -> None:
+async def stock_file_received(message: types.Message, state: FSMContext, bot: Bot) -> None:
     """CSV-документ: байты → временный файл → import_stock_csv → отчёт.
 
     Байты — message.download(destination=io.BytesIO) (aiogram 3); файл
@@ -606,7 +606,7 @@ async def stock_file_received(message: types.Message, state: FSMContext) -> None
         )
         return
     buf = io.BytesIO()
-    await message.download(destination=buf)
+    await bot.download(message.document, destination=buf)
     await state.clear()                        # файл принят — FSM больше не нужна
     tmp_path: Path | None = None
     try:

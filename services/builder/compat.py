@@ -466,17 +466,13 @@ def _builtin_checks(
     config, parts_by_slot
 ) -> tuple[list[str], list[str], list[str]]:
     """Наличие/достаточность по слотам конфига (комплектность — в RESULT).
-
-    Возвращает (not_found_errors, insufficient_errors, to_order_warnings).
-    «Деталь не найдена» всегда раньше «недостаточно на складе»; внутри каждой
-    группы — порядок перечисления слотов в конфиге. quantity приводится к
-    float (из БД приходят float), сравнение без эпсилон-трюков. Позиции с
-    params["to_order"] (Этап 10в) вместо insufficient дают warning.
+    ...
     """
     slots = config.get("slots") or {}
     not_found: list[str] = []
     insufficient: list[str] = []
     to_order: list[str] = []
+    
     for category, slot in slots.items():
         slot = slot or {}
         if not slot.get("key"):
@@ -504,6 +500,21 @@ def _builtin_checks(
                     f"Недостаточно на складе: {name} "
                     f"(нужно {qty}, доступно {_fmt_num(quantity)})"
                 )
+
+    # --- НОВАЯ ПРОВЕРКА: Камера DJI и VTX ---
+    cam_part = parts_by_slot.get("camera")
+    vtx_part = parts_by_slot.get("vtx")
+    
+    if cam_part and vtx_part:
+        cam_name = str(cam_part.get("name") or "").lower()
+        if "dji" in cam_name:
+            # Выдаем ошибку (это заблокирует сборку)
+            insufficient.append(
+                f"{vtx_part.get('name')}: нельзя установить вместе с камерой DJI. "
+                "Камера DJI уже имеет встроенный видеопередатчик (VTX)."
+            )
+    # ---------------------------------------
+
     return not_found, insufficient, to_order
 
 
