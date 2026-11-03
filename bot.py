@@ -34,6 +34,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import bot, system_logger
 from db import close_db, init_db
+from handlers.access import router as access_router
 from handlers.admin import router as admin_router
 from handlers.early_buttons import router as early_buttons_router
 from handlers.build import router as build_router
@@ -53,6 +54,22 @@ from services.ai_providers import get_ai_provider
 
 dp = Dispatcher(storage=MemoryStorage())
 
+# ============================================================
+# Middleware (outer, до include_router, порядок важен):
+#   1) UserTrackingMiddleware — учёт пользователей (users, last_seen_at) для
+#      /stats; сбои БД гасятся (fail-open) — учёт не блокирует работу;
+#   2) AccessControlMiddleware — белый список доступа (allowed_users),
+#      fail-closed: пускает дальше только админа и одобренных.
+# Регистрация UserTrackingMiddleware восстановлена (ранее не подключался,
+# хотя предусматривался): /stats и last_seen_at снова работают.
+# ============================================================
+from middleware import AccessControlMiddleware, UserTrackingMiddleware  # noqa: E402
+
+dp.message.outer_middleware(UserTrackingMiddleware())
+dp.callback_query.outer_middleware(UserTrackingMiddleware())
+dp.message.outer_middleware(AccessControlMiddleware())
+dp.callback_query.outer_middleware(AccessControlMiddleware())
+
 # Порядок регистрации роутеров (контракт tests/test_verify_all.py):
 #   0) admin — админ-команды и шаги админ-FSM раньше FSM-сценариев и fallback
 #      (калькулятор ловит любой текст в своих состояниях);
@@ -60,17 +77,23 @@ dp = Dispatcher(storage=MemoryStorage())
 #      любого сценария: нажатие завершает активный FSM и сразу открывает раздел
 #      (раньше кнопку съедал сценарий — калькулятор отвечал «расчёт закрыт»,
 #      а раздел не открывался);
-#   2) calculator — FSM-ввод не должен перехватываться fallback'ом AI;
-#   3) menu — callback "model:<код>" из сценариев обрабатывается здесь;
-#   4) cheatsheets — «📚 Шпаргалки» (cheat:*): сразу после menu, до fallback;
-#   5) scenarios — после menu: кнопки «📦 Карточка <модель>» перехватывает menu;
-#   6) followup — FSM ограничен FollowUpState, но обязан стоять до fallback;
-#   7) faq — статические экраны + FSM поиска;
-#   8) objections — статические экраны + стоп-лист; до fallback;
-#   9) selection / search / build / builder / voice — прочие сценарии;
-#  10) fallback — последним: догоняет всё, что не распознано выше.
+#   2) access — кнопки «✅ Одобрить»/«❌ Отклонить» из уведомлений о доступе
+#      (callback "access:*"): СРАЗУ ПОСЛЕ early_buttons и ДО calculator/menu/
+#      сценариев — нажатие кнопки решения не должно перехватываться активным
+#      FSM-сценарием админа или съедаться любым другим роутером;
+#   3) calculator — FSM-ввод не должен перехватываться fallback'ом AI;
+#   4) menu — callback "model:<код>" из сценариев обрабатывается здесь;
+#   5) cheatsheets — «📚 Шпаргалки» (cheat:*): сразу после menu, до fallback;
+#   6) scenarios — после menu: кнопки «📦 Карточка <модель>» перехватывает menu;
+#   7) followup — FSM ограничен FollowUpState, но обязан стоять до fallback;
+#   8) faq — статические экраны + FSM поиска;
+#   9) objections — статические экраны + стоп-лист; до fallback;
+#  10) selection / search / build / builder / voice — прочие сценарии;
+#  11) fallback — последним: догоняет всё, что не распознано выше.
 dp.include_router(admin_router)
 dp.include_router(early_buttons_router)
+# Контроль доступа (access:*): сразу после early_buttons, до FSM-сценариев
+dp.include_router(access_router)
 dp.include_router(calculator_router)
 dp.include_router(menu_router)
 dp.include_router(cheatsheets_router)

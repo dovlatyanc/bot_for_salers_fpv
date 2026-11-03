@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from db.engine import close_engine, ensure_engine, get_sessionmaker, init_engine
 from db.models import Base
 from db.repositories import (
+    AllowedUserRepository,
     CalcHistoryRepository,
     DailyCounterRepository,
     FaqRepository,
@@ -64,6 +65,7 @@ faq = FaqRepository()
 settings = SettingsRepository()
 users = UserRepository()
 counters = DailyCounterRepository()
+allowed = AllowedUserRepository()
 
 
 def _drafts_unique_on_user(insp) -> bool:
@@ -262,4 +264,5 @@ __all__ = [
     "settings",
     "users",
     "counters",
+    "allowed",
 ]

@@ -1,0 +1,207 @@
+============================================================
+СТРУКТУРА БОТА — FPV SALES BOT (понимание логики приложения)
+============================================================
+
+1. ЧТО ЭТО ЗА ПРОЕКТ
+--------------------
+Telegram-бот для продавцов FPV-дронов и комплектующих (aiogram 3 + Python).
+Помогает менеджеру по продажам: считать маржу, смотреть каталог АКБ,
+подбирать батареи, работать с возражениями, вести напоминания (follow-up)
+и спрашивать AI-ассистента, когда не хватает справочников.
+
+Стек:
+  • aiogram 3.13+ (FSM — кастомный SQLAlchemyStorage в БД, переживает рестарт)
+  • SQLAlchemy 2 async + aiosqlite (SQLite data/bot.db; PostgreSQL = DB_URL в .env)
+  • python-dotenv, aiohttp (прокси: http/https/socks через AiohttpSession)
+  • AI: Cloudflare AI Worker или YandexGPT+SpeechKit — выбор через AI_PROVIDER в .env
+  • fpv-ai-proxy — отдельный Node-проект (Cloudflare Worker) для AI и фото моделей
+
+Запуск:  .venv\Scripts\python.exe bot.py   (нужен .env с BOT_TOKEN)
+Тесты:   .venv\Scripts\python.exe -m pytest -q   (563 passed / 0 failed)
+
+2. ТОЧКА ВХОДА И ЖИЗНЕННЫЙ ЦИКЛ (bot.py)
+----------------------------------------
+async def main():
+  1) await init_db() — движок + таблицы + идемпотентный перенос JSON-сидов в БД;
+  2) get_ai_provider() — fail-fast: неверный AI_PROVIDER роняет старт;
+  3) запускаются 3 фоновые задачи:
+       - reminders_loop(bot)  — утренняя сводка follow-up в 9:00;
+       - upcoming_loop(bot)   — напоминания «за 10/5/2 минуты» до события;
+       - heartbeat_loop()     — метка времени в HEARTBEAT_FILE для watchdog'а;
+  4) бесконечный цикл dp.start_polling(bot) с retry (задержка 5с → 60с, ×1.5);
+  5) finally: отмена задач, close_db(), bot.session.close().
+
+3. АРХИТЕКТУРА И НАПРАВЛЕНИЕ ЗАВИСИМОСТЕЙ
+-----------------------------------------
+Строго в одну сторону, без циклов:
+  config.py ← data / states / keyboards / utils / ai / services ← handlers ← bot.py
+
+Слои:
+  config.py, logging_setup.py — .env, логгеры (system/dialog), единственный Bot;
+  data/        — чистые данные: каталог моделей, сценарии, возражения,
+                 справочники «Конструктора»;
+  states/      — FSM-состояния;
+  db/          — SQLite-хранилище: engine, models, repositories (+retry при
+                 блокировке), seed (JSON → таблицы), fsm_storage (персистентный FSM);
+  keyboards/   — reply/inline-клавиатуры (включая builder.py);
+  utils/       — фильтрация, форматирование, отправка карточек (edit_or_send);
+  services/    — ai_providers (base/cloudflare/yandex/factory/resilience/prompts)
+                 + builder (classifier / matcher / compat — чистая логика);
+  ai/ai.py     — фасад AI: ask_ai, handle_ai_request, feedback-кнопки 👍/👎;
+  handlers/    — 15 роутеров aiogram 3;
+  middleware.py— UserTrackingMiddleware: учёт пользователей в таблице users
+                 (INSERT OR IGNORE + last_seen_at при любом касании).
+
+4. ПОРЯДОК РОУТЕРОВ — КЛЮЧЕВАЯ ЛОГИКА (контракт tests/test_verify_all.py)
+-------------------------------------------------------------------------
+Порядок регистрации определяет, кто «съест» сообщение:
+  1. admin        — админ-команды и AdminState первыми (иначе FSM-сценарии
+                    перехватят ввод админа); для не-админа — тишина;
+  2. early_buttons— кнопки «🤖 AI-ассистент» и «📚 Шпаргалки» работают ИЗ ЛЮБОГО
+                    сценария: сбрасывают активный FSM и открывают раздел;
+  3. calculator   — FSM-ввод калькулятора не должен ловиться AI-fallback'ом;
+  4. menu         — callback model:<код>, /start, /help, «📊 ТТХ» (легаси),
+                    «🛑 Стоп-лист», «📦 Памятка», «🛠 Конструктор дронов»;
+  5. cheatsheets  — раздел «📚 Шпаргалки» (cheat:*);
+  6. scenarios    — сценарии продаж (после menu: «📦 Карточка <модель>»
+                    перехватывает menu);
+  7. followup     — напоминания (до fallback);
+  8. faq          — категории FAQ + FSM поиска;
+  9. objections   — база возражений + стоп-лист слов;
+ 10. selection / search / build / builder / voice — подбор, поиск,
+                    «своя сборка», конструктор дронов, голосовые;
+ 11. fallback     — AI на любой незнакомый текст, /health (админ), прочее.
+
+
+5. ФУНКЦИОНАЛЬНЫЕ БЛОКИ (что умеет бот)
+---------------------------------------
+  • 💰 Калькулятор маржи (handlers/calculator.py, MarginState):
+      выбор модели → закупочная цена → доставка → … расчёт по прайсу из БД,
+      скидки/объёмы (совет «можно смело торговаться» при безопасной скидке
+      ≥ 2500 ₽), история расчётов (CalcEntry), /cancel — универсальная отмена.
+  • Каталог АКБ (menu + cheatsheets): ряды 6S/8S → карточки моделей с фото;
+    callback-цепочка row: → model:.
+  • 🧠 Подбор (selection.py, SelectionState step_a/step_b):
+      экспресс-подбор АКБ: дрон → разъём → ёмкость.
+  • 🔎 Поиск (search.py): мульти-фильтр по каталогу.
+  • 🔧 Своя сборка (build.py, BuildState): умный ввод «12В 12000мА·ч», «8S»,
+    «90А» (кириллица/латиница) → бот сам переводит в S/P и доспрашивает
+    недостающее; итоговая карточка (разъём XT60, балансир, токи).
+  • 🎯 Сценарии продаж (scenarios.py, data/scenarios.py): готовые скрипты
+    разговора с клиентом (5–7 сценариев).
+  • 💬 Возражения (objections.py): база ответов на возражения.
+  • ❓ FAQ (faq.py): категории + поиск (FSM FaqState).
+  • 🛑 Стоп-лист, 📦 Памятка, /checklist — статические справочные экраны.
+  • ⏰ Follow-up (followup.py, FollowUpState): CRUD личных дел,
+    фоновая утренняя сводка в 9:00 (reminders_loop), напоминания
+    «за 10/5/2 минуты» (upcoming_loop), защита от дублей и ретраев.
+  • 🤖 AI-ассистент (ai/ai.py + services/ai_providers): fallback на любой текст,
+    голосовые (распознавание SpeechKit — handlers/voice.py), оценка 👍/👎
+    с отправкой фидбека админу, дневные счётчики (daily_counters);
+    отказоустойчивость: retry + circuit breaker + graceful degradation
+    (пул дружелюбных фраз-заглушек) + /health для админа.
+  • 🛠 Конструктор дронов (handlers/builder.py, BuilderState, 6 состояний):
+      FSM-сборка борта по 13 слотам из боевой БД остатков:
+      start → slot_menu → part_list (выбор по int parts.id — лимит Telegram
+      64 байта на callback_data) → … → review → save → done;
+      фильтры кандидатов под слот (моторы под размер, vtx/антенны под диапазон,
+      tx/rx под частоту), проверка совместимости (правила из compat_rules +
+      встроенные), черновики (builder_drafts, save с draft_id = update);
+      серийный режим: 12 производственных рецептов (таблица recipes) + защита
+      L1–L4 в свободной сборке; вход: reply-кнопка или /builder.
+
+6. АДМИН-КОНТУР (handlers/admin.py, только ADMIN_ID из .env)
+------------------------------------------------------------
+  /stats            — аналитика: пользователи, активность, расчёты, AI-нагрузка
+                      + блок «🛠 Конструктор»;
+  /add_faq          — FSM «вопрос → ответ → категория» (CRUD FAQ в боте);
+  /update_price     — FSM «код модели → новая цена» (розница по умолчанию,
+                      ступень «опт=…»);
+  /load_stock       — FSM-шаг ждёт CSV 1С (cp1251/utf-8) → import_stock_csv →
+                      parts/stock + снапшот, diff-отчёт (новых/обнулено/топ-5);
+  /classify_pending — «other»-позиции после импорта (до 20 строк);
+  /add_alias        — «<категория> <название>» → upsert алиаса +
+                      reclassify_all_parts (алиасы побеждают автоклассификацию);
+  /aliases /del_alias — список алиасов / удаление по id;
+  /compat_rules     — экран правил совместимости, toggle вкл/выкл,
+                      FSM-добавление (тип → params JSON → описание);
+  /stock_stats      — расход между двумя последними снапшотами;
+  /reclassify       — переклассификация всех parts по актуальным правилам
+                      (идемпотентна);
+  /recipes          — собираемость серийных рецептов по остаткам;
+  /health           — живой статус AI-провайдера (fallback.py);
+  /cancel           — отмена админ-FSM.
+
+7. FSM-СОСТОЯНИЯ (StatesGroup)
+------------------------------
+  Общие (states/states.py):
+    FeedbackState (обратная связь), BuildState (конфигурация, разъём),
+    SelectionState (step_a, step_b), BuilderState (6 состояний конструктора).
+  Локальные в хендлерах:
+    MarginState (калькулятор), FaqState (поиск FAQ),
+    FollowUpState (текст напоминания), AdminState (шаги админ-команд).
+  Паттерн «ранних кнопок»: меню-кнопки зарегистрированы раньше сценариев
+  и сами сбрасывают state — сценарий не может «съесть» нажатие.
+  FSM хранится в БД (db/fsm_storage.py, таблица user_states) — переживает
+  рестарт; retry записи при блокировке SQLite (db/retry.py).
+
+8. БАЗА ДАННЫХ (SQLite data/bot.db; PostgreSQL = DB_URL)
+--------------------------------------------------------
+  Основные таблицы: BotSetting, FollowUp, FollowUpReminder, CalcEntry, Price,
+  FaqCategory, FaqQuestion, User (users), DailyCounter.
+  «Конструктор» (8 таблиц): parts (номенклатура, params JSON), stock (остатки),
+  stock_snapshots + stock_snapshot_rows (загрузки CSV), part_aliases,
+  compat_rules, builder_drafts, recipes.
+  db/seed.py — идемпотентный перенос legacy JSON (faq.json, followups.json)
+  и справочников в пустые таблицы.
+
+9. ПОТОК ДАННЫХ «КОНСТРУКТОРА»
+------------------------------
+  CSV 1С («Номенклатура;Ед;Кол-во», cp1251) → /load_stock → import_stock_csv
+  (classify_part + extract_params, алиасы-override) → parts/stock →
+  фасады db/repositories_builder.py → services/builder/matcher
+  (parse_fragments, score_part, apply_slot_filters) → хендлеры → клавиатуры;
+  итог — check_compatibility (compat_rules + встроенные проверки).
+
+10. НАВИГАЦИЯ
+-------------
+  Главное меню: reply-клавиатура main_kb (/start, /help).
+  «📚 Шпаргалки» — inline-меню разделов (каталог моделей, подбор, сценарии,
+  FAQ, возражения, стоп-лист, памятка); каждый экран заканчивается
+  «⬅️ В шпаргалки» (cheat:menu), из меню — «⬅️ В меню» (cheat:back) в главное
+  меню. Неизвестные/протухшие callback-кнопки обрабатываются «страховочными»
+  хендлерами («Раздел не найден»).
+
+11. НАДЁЖНОСТЬ И ЭКСПЛУАТАЦИЯ
+-----------------------------
+  • Персистентный FSM в БД + retry при блокировке SQLite;
+  • AI: retry + circuit breaker + graceful degradation (пул фраз-заглушек);
+  • heartbeat бота (HEARTBEAT_FILE/HEARTBEAT_INTERVAL в bot.py) + серверный
+    watchdog (deploy/watchdog.py, systemd): просроченный heartbeat → рестарт
+    юнита + уведомление админу в Telegram;
+  • deploy/: systemd-юниты fpvbot + fpvbot-watchdog, backup_db.py (онлайн-бэкап),
+    make_release.py (сборка релиза), delete_webhook.py;
+  • Логи: bot_system.log (система) и bot_dialogs.log (диалоги),
+    RotatingFileHandler (5×10 МБ / 10×20 МБ);
+  • Прокси: PROXY_URL (http/https/socks5), логин/пароль маскируются в логах.
+
+12. ТЕСТЫ И ПРОВЕРКИ
+--------------------
+  tests/ — pytest-набор (563 passed): хендлеры, БД, конструктор (включая
+  E2E test_builder_e2e.py), порядок роутеров (test_verify_all.py,
+  EXPECTED_ROUTER_NAMES: admin первый, early_buttons рядом).
+  _verify_*.py — автономные смоук-скрипты: _verify_calc, _verify_followup,
+  _verify_scenarios, _verify_flow, _verify_faq, _verify_build_menu,
+  _verify_builder, _verify_ai_providers, _verify_sel.
+  Запуск: python -X utf8 _verify_<имя>.py
+
+13. ИТОГ: ЛОГИКА ПРИЛОЖЕНИЯ В ОДНОЙ ФРАЗЕ
+-----------------------------------------
+Бот = набор независимых «вертикальных» сценариев (справочники + FSM + БД),
+собранных на одном Dispatcher с строго упорядоченными роутерами: сначала
+админ и «ранние кнопки», затем FSM-сценарии, и в самом конце — AI-fallback,
+который ловит всё, что не распознали остальные. Данные — в SQLite
+(справочники, прайс, FAQ, остатки, напоминания), AI — внешний сервис за
+фасадом с отказоустойчивостью. Надёжность обеспечивают персистентный FSM,
+retry, watchdog с heartbeat и автоперезапуск polling.
+

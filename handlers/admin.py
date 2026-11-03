@@ -1,4 +1,4 @@
-"""
+﻿"""
 Админ-команды бота (аудит/развитие пп. 3.1–3.2): аналитика и CRUD без БД-клиента.
 
 Команды (доступны только ADMIN_ID из .env; не-админ получает тишину —
@@ -76,6 +76,7 @@ from sqlalchemy import func, select
 from aiogram import Bot
 from config import ADMIN_ID
 from db import (
+    allowed as allowed_db,
     calc_history as history_db,
     counters as counters_db,
     faq as faq_db,
@@ -1088,4 +1089,99 @@ async def cmd_recipes(message: types.Message) -> None:
         header + ("\n" + "\n".join(lines) if lines else ""),
         parse_mode="HTML",
     )
+
+
+# ============================================================
+# Контроль доступа: /allow, /deny, /allowed, /revoke (белый список)
+# без FSM — одно сообщение, сразу результат. Дублируют inline-кнопки
+# handlers/access.py: полезны, если уведомление удалено или отправка
+# админу не дошла (например, бот у пользователя был заблокирован).
+# ------------------------------------------------------------
+def _parse_user_id(raw: str) -> int | None:
+    """Telegram-id из аргумента команды: целое СТРОГО положительное (None — нет).
+
+    «0» и отрицательные не являются Telegram-id — их пропуск здесь же,
+    чтобы опечатка вида «/allow 0» не создала бессмысленную запись.
+    """
+    if not raw.lstrip("-").isdigit():
+        return None
+    value = int(raw)
+    return value if value > 0 else None
+
+
+@router.message(Command("allow"))
+async def cmd_allow(message: types.Message) -> None:
+    """/allow <user_id> [username] — ручное одобрение доступа (status='approved').
+
+    Записи может не быть (пользователь ещё не писал боту) — создаётся сразу
+    с решением: user_id потом пройдёт AccessControlMiddleware без запроса.
+    """
+    if not _is_admin(message):
+        return
+    parts = (message.text or "").split()
+    user_id = _parse_user_id(parts[1]) if len(parts) >= 2 else None
+    if user_id is None:
+        await message.answer("Формат: /allow <user_id> [username] (id — число > 0)")
+        return
+    username = parts[2].lstrip("@") if len(parts) > 2 else None
+    await allowed_db.upsert_pending(user_id, username, None)
+    await allowed_db.set_decision(user_id, "approved")
+    await message.answer(f"✅ <code>{user_id}</code> — доступ одобрен.", parse_mode="HTML")
+
+
+@router.message(Command("deny"))
+async def cmd_deny(message: types.Message) -> None:
+    """/deny <user_id> — отказ в доступе (status='declined')."""
+    if not _is_admin(message):
+        return
+    parts = (message.text or "").split()
+    user_id = _parse_user_id(parts[1]) if len(parts) == 2 else None
+    if user_id is None:
+        await message.answer("Формат: /deny <user_id> (id — число > 0)")
+        return
+    await allowed_db.upsert_pending(user_id, None, None)
+    await allowed_db.set_decision(user_id, "declined")
+    await message.answer(f"❌ <code>{user_id}</code> — доступ отклонён.", parse_mode="HTML")
+
+
+@router.message(Command("allowed"))
+async def cmd_allowed(message: types.Message) -> None:
+    """Список одобренных: id, @username, дата решения."""
+    if not _is_admin(message):
+        return
+    rows = await allowed_db.list_allowed()
+    if not rows:
+        await message.answer("Белый список пуст.")
+        return
+    lines = []
+    for r in rows:
+        who = f"@{r['username']}" if r["username"] else (r["full_name"] or "—")
+        when = f" · {r['decided_at'][:10]}" if r["decided_at"] else ""
+        lines.append(f"• <code>{r['user_id']}</code> {html.escape(who)}{when}")
+    await message.answer(
+        f"✅ <b>Одобренные ({len(rows)})</b>\n" + "\n".join(lines),
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("revoke"))
+async def cmd_revoke(message: types.Message) -> None:
+    """Удалить из белого списка (полное удаление записи: статус забыт)."""
+    if not _is_admin(message):
+        return
+    parts = (message.text or "").split()
+    user_id = _parse_user_id(parts[1]) if len(parts) == 2 else None
+    if user_id is None:
+        await message.answer("Формат: /revoke <user_id> (id — число > 0)")
+        return
+    removed = await allowed_db.remove_user(user_id)
+    if removed:
+        await message.answer(
+            f"🗑 <code>{user_id}</code> — удалён из белого списка.",
+            parse_mode="HTML",
+        )
+    else:
+        await message.answer(f"ℹ️ <code>{user_id}</code> не найден.", parse_mode="HTML")
+
+
 

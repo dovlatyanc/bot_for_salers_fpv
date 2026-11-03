@@ -3,8 +3,8 @@
 import asyncio
 
 EXPECTED_ROUTER_NAMES = [
-    "admin", "early_buttons", "calculator", "menu", "cheatsheets", "scenarios",
-    "followup", "faq", "objections",
+    "admin", "early_buttons", "access", "calculator", "menu", "cheatsheets",
+    "scenarios", "followup", "faq", "objections",
 ]
 
 
@@ -28,19 +28,25 @@ def test_bot_assembles_with_router_order():
     from handlers.cheatsheets import router as cheatsheets_router
     from handlers.early_buttons import router as early_buttons_router
     from handlers.fallback import router as fallback_router
+    from handlers.calculator import router as calculator_router
 
     subs = bot.dp.sub_routers
     names = [getattr(r, "name", None) for r in subs]
-    assert names[:9] == EXPECTED_ROUTER_NAMES, names
+    assert names[:10] == EXPECTED_ROUTER_NAMES, names
+    # ЭТАП access: роутер "access" вставлен на позицию 2 (сразу после
+    # early_buttons) — ассерты ниже сдвинуты ровно на +1, сами пары
+    # (позиция, роутер) не менялись:
     assert subs[0] is admin_router, "админ-команды обязаны стоять раньше FSM-сценариев и fallback"
     assert subs[1] is early_buttons_router, "ранние кнопки меню обязаны стоять раньше FSM-сценариев"
-    assert subs[4] is cheatsheets_router, "cheatsheets обязан стоять сразу после menu"
-    assert subs[9] is selection.router
-    assert subs[10] is search.router
-    assert subs[11] is build.router
-    assert names[12] == "builder", names
-    assert subs[12] is builder_router
-    assert subs[13] is voice.router
+    assert subs[2].name == "access", "access обязан стоять сразу после early_buttons"
+    assert subs[3] is calculator_router, "калькулятор — сразу после access (был после early_buttons)"
+    assert subs[5] is cheatsheets_router, "cheatsheets обязан стоять сразу после menu"
+    assert subs[10] is selection.router
+    assert subs[11] is search.router
+    assert subs[12] is build.router
+    assert names[13] == "builder", names
+    assert subs[13] is builder_router
+    assert subs[14] is voice.router
     assert subs[-1] is fallback_router, "fallback обязан быть последним"
     assert all(r is not fallback_router for r in subs[:-1])
 

@@ -176,6 +176,26 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+class AllowedUser(Base):
+    """Белый список доступа: подтверждение администратором через inline-кнопки.
+
+    Новый пользователь при /start попадает в middleware AccessControlMiddleware:
+    статуса нет → upsert_pending + уведомление админу (handlers/access.py,
+    callback "access:approve:<id>" / "access:decline:<id>"). Status: "pending" —
+    запрос ждёт решения, "approved" — доступ открыт, "declined" — отказ.
+    Решение хранится постоянно: повторные /start уведомление админу не дублируют.
+    """
+
+    __tablename__ = "allowed_users"
+
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)  # Telegram id
+    username: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    full_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    requested_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class DailyCounter(Base):
     """Дневной счётчик метрик (аудит/развитие п. 3.1): обращения к AI для /stats.
 

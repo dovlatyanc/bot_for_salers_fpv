@@ -23,6 +23,7 @@ from sqlalchemy.exc import IntegrityError
 from db.engine import get_sessionmaker
 from db.retry import retry_on_db_lock
 from db.models import (
+    AllowedUser,
     BotSetting,
     CalcEntry,
     DailyCounter,
@@ -546,6 +547,91 @@ class DailyCounterRepository:
         async with get_sessionmaker()() as session:
             row = await session.get(DailyCounter, (day, metric))
             return int(row.value) if row else 0
+
+
+# ============================================================
+# Белый список доступа: allowed_users (подтверждение админом)
+# ============================================================
+class AllowedUserRepository:
+    """Таблица allowed_users: статус доступа каждого Telegram-id.
+
+    Читается AccessControlMiddleware на каждом событии (is_allowed/get_status —
+    без retry: только чтение), пишется при новом запросе и решении админа
+    (upsert_pending/set_decision — через @retry_on_db_lock, как остальные записи).
+    """
+
+    async def is_allowed(self, user_id: int) -> bool:
+        """True — доступ одобрен (status == 'approved')."""
+        async with get_sessionmaker()() as session:
+            row = await session.get(AllowedUser, user_id)
+            return row is not None and row.status == "approved"
+
+    async def get_status(self, user_id: int) -> str | None:
+        """Статус доступа: 'pending' | 'approved' | 'declined'; нет записи — None."""
+        async with get_sessionmaker()() as session:
+            row = await session.get(AllowedUser, user_id)
+            return row.status if row else None
+
+    @retry_on_db_lock()
+    async def upsert_pending(self, user_id: int, username: str | None,
+                             full_name: str | None) -> None:
+        """Создаёт запрос доступа или освежает контакты у существующего.
+
+        Статус существующей записи НЕ перезаписывается: повторный /start от
+        отклонённого не возвращает ему 'pending' (иначе отказ можно было бы
+        обнулить перезапуском бота), у одобренного статус не трогается вовсе.
+        """
+        async with get_sessionmaker()() as session:
+            row = await session.get(AllowedUser, user_id)
+            if row is None:
+                session.add(AllowedUser(
+                    user_id=user_id, username=username, full_name=full_name,
+                    status="pending", requested_at=datetime.now(),
+                ))
+            else:
+                if username:
+                    row.username = username
+                if full_name:
+                    row.full_name = full_name
+            await session.commit()
+
+    @retry_on_db_lock()
+    async def set_decision(self, user_id: int, status: str) -> bool:
+        """Ставит решение админа ('approved'/'declined') + decided_at; False — записи нет."""
+        async with get_sessionmaker()() as session:
+            row = await session.get(AllowedUser, user_id)
+            if row is None:
+                return False
+            row.status = status
+            row.decided_at = datetime.now()
+            await session.commit()
+            return True
+
+    async def list_allowed(self) -> list[dict]:
+        """Одобренные: [{user_id, username, full_name, decided_at: ISO|None}], по id."""
+        async with get_sessionmaker()() as session:
+            rows = (await session.execute(
+                select(AllowedUser)
+                .where(AllowedUser.status == "approved")
+                .order_by(AllowedUser.user_id)
+            )).scalars().all()
+            return [{
+                "user_id": int(r.user_id),
+                "username": r.username,
+                "full_name": r.full_name,
+                "decided_at": _iso_dt(r.decided_at),
+            } for r in rows]
+
+    @retry_on_db_lock()
+    async def remove_user(self, user_id: int) -> bool:
+        """Полностью удаляет запись (из белого списка); False — не было."""
+        async with get_sessionmaker()() as session:
+            row = await session.get(AllowedUser, user_id)
+            if row is None:
+                return False
+            await session.delete(row)
+            await session.commit()
+            return True
 
 
 # ============================================================
